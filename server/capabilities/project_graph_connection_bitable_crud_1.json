@@ -1,0 +1,91 @@
+{
+  "id": "project_graph_connection_bitable_crud_1",
+  "pluginKey": "@official-plugins/feishu-bitable",
+  "pluginVersion": "1.0.22",
+  "name": "项目图谱连线表多维表格CRUD操作",
+  "description": "用于项目图谱连线表的数据读写操作，支持连接名称、连接ID、连接类型等字段的增删改查。",
+  "icon": "",
+  "paramsSchema": {},
+  "formValue": {
+    "appToken": "WC3cb3acOaminMsXKbTcwPKdnMg",
+    "tableID": "tblFSCyy1hjLEFO5",
+    "fields": [
+      {
+        "type": 1,
+        "bizType": "Text",
+        "readable": true,
+        "writeable": true,
+        "id": "fld1",
+        "name": "连接名称"
+      },
+      {
+        "id": "fld2",
+        "name": "连接ID",
+        "type": 1,
+        "bizType": "Text",
+        "readable": true,
+        "writeable": true
+      },
+      {
+        "bizType": "SingleSelect",
+        "readable": true,
+        "writeable": true,
+        "enumValues": [],
+        "id": "fld3",
+        "name": "连接类型",
+        "type": 3
+      },
+      {
+        "type": 1,
+        "bizType": "Text",
+        "readable": true,
+        "writeable": true,
+        "id": "fld4",
+        "name": "标签"
+      },
+      {
+        "name": "关键链路",
+        "type": 7,
+        "bizType": "Checkbox",
+        "readable": true,
+        "writeable": true,
+        "id": "fld5"
+      },
+      {
+        "writeable": true,
+        "id": "fld6",
+        "name": "排序",
+        "type": 2,
+        "bizType": "Number",
+        "readable": true
+      },
+      {
+        "id": "fld7",
+        "name": "所属项目",
+        "type": 1,
+        "bizType": "Text",
+        "readable": true,
+        "writeable": true
+      },
+      {
+        "readable": true,
+        "writeable": true,
+        "id": "fld8",
+        "name": "来源节点",
+        "type": 15,
+        "bizType": "SingleLink"
+      },
+      {
+        "id": "fld9",
+        "name": "目标节点",
+        "type": 15,
+        "bizType": "SingleLink",
+        "readable": true,
+        "writeable": true
+      }
+    ]
+  },
+  "createdAt": 1785906975163,
+  "updatedAt": 1785906975163,
+  "createdBy": 7628147853408996570
+}

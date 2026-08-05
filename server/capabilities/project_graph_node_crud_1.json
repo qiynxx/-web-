@@ -1,0 +1,165 @@
+{
+  "id": "project_graph_node_crud_1",
+  "pluginKey": "@official-plugins/feishu-bitable",
+  "pluginVersion": "1.0.22",
+  "name": "项目图谱节点表CRUD操作",
+  "description": "用于项目图谱节点表的数据读写操作，支持节点的创建、查询、更新、删除等功能",
+  "icon": "",
+  "paramsSchema": {},
+  "formValue": {
+    "appToken": "WC3cb3acOaminMsXKbTcwPKdnMg",
+    "tableID": "tblVIjVsxIbuk1QQ",
+    "fields": [
+      {
+        "readable": true,
+        "type": 1,
+        "writeable": true,
+        "bizType": "Text",
+        "id": "fld_node_name",
+        "name": "节点名称"
+      },
+      {
+        "name": "节点ID",
+        "readable": true,
+        "type": 1,
+        "writeable": true,
+        "bizType": "Text",
+        "id": "fld_node_id"
+      },
+      {
+        "name": "副标题",
+        "readable": true,
+        "type": 1,
+        "writeable": true,
+        "bizType": "Text",
+        "id": "fld_subtitle"
+      },
+      {
+        "bizType": "SingleSelect",
+        "id": "fld_group",
+        "name": "分组",
+        "readable": true,
+        "type": 3,
+        "writeable": true,
+        "enumValues": []
+      },
+      {
+        "name": "节点类型",
+        "readable": true,
+        "type": 3,
+        "writeable": true,
+        "enumValues": [],
+        "bizType": "SingleSelect",
+        "id": "fld_node_type"
+      },
+      {
+        "writeable": true,
+        "enumValues": [],
+        "bizType": "SingleSelect",
+        "id": "fld_status",
+        "name": "状态",
+        "readable": true,
+        "type": 3
+      },
+      {
+        "name": "负责人",
+        "readable": true,
+        "type": 11,
+        "writeable": true,
+        "bizType": "User",
+        "id": "fld_owner"
+      },
+      {
+        "readable": true,
+        "type": 4,
+        "writeable": true,
+        "bizType": "Progress",
+        "id": "fld_progress",
+        "name": "进度"
+      },
+      {
+        "name": "版本/分支",
+        "readable": true,
+        "type": 1,
+        "writeable": true,
+        "bizType": "Text",
+        "id": "fld_version_branch"
+      },
+      {
+        "id": "fld_date",
+        "name": "日期",
+        "readable": true,
+        "type": 5,
+        "writeable": true,
+        "bizType": "DateTime"
+      },
+      {
+        "readable": true,
+        "type": 1,
+        "writeable": true,
+        "bizType": "Text",
+        "id": "fld_tags",
+        "name": "标签"
+      },
+      {
+        "writeable": true,
+        "bizType": "Text",
+        "id": "fld_work_content",
+        "name": "工作内容",
+        "readable": true,
+        "type": 1
+      },
+      {
+        "bizType": "Text",
+        "id": "fld_next_step",
+        "name": "下一步",
+        "readable": true,
+        "type": 1,
+        "writeable": true
+      },
+      {
+        "name": "风险/阻塞",
+        "readable": true,
+        "type": 1,
+        "writeable": true,
+        "bizType": "Text",
+        "id": "fld_risk_block"
+      },
+      {
+        "bizType": "Text",
+        "id": "fld_image_url",
+        "name": "图片URL",
+        "readable": true,
+        "type": 1,
+        "writeable": true
+      },
+      {
+        "bizType": "Number",
+        "id": "fld_sort",
+        "name": "排序",
+        "readable": true,
+        "type": 2,
+        "writeable": true
+      },
+      {
+        "name": "所属项目",
+        "readable": true,
+        "type": 1,
+        "writeable": true,
+        "bizType": "Text",
+        "id": "fld_project"
+      },
+      {
+        "bizType": "SingleLink",
+        "id": "fld_parent_node",
+        "name": "父节点",
+        "readable": true,
+        "type": 18,
+        "writeable": true
+      }
+    ]
+  },
+  "createdAt": 1785906991905,
+  "updatedAt": 1785906991905,
+  "createdBy": 7628147853408996570
+}
