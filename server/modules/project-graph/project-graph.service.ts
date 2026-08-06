@@ -127,6 +127,7 @@ export class ProjectGraphService {
           target: createdNodeId,
           label: node.lane === 'hardware' ? '演进' : '派生',
           critical: false,
+          kind: 'tree',
         }),
       );
     }
@@ -278,14 +279,18 @@ export class ProjectGraphService {
     const nodeIds = new Set<string>(
       nodeRecords.map((r) => r.id),
     );
-    const nodes = nodeRecords.map((r) =>
+    const mappedNodes = nodeRecords.map((r) =>
       this.mapGraphNodeRecordToNode(r.record, r.id, nodeIds),
     );
-    await this.enrichOwnerIds(nodes);
-    if (nodes.length === 0) {
+    if (mappedNodes.length === 0) {
       return this.buildStaticGraph();
     }
-    const edges = this.mapEdgeRecords(edgeRecords, nodeIds);
+    const mappedEdges = this.mapEdgeRecords(edgeRecords, nodeIds);
+    const { nodes, edges } = reconcileGraphRelationships(
+      mappedNodes,
+      mappedEdges,
+    );
+    await this.enrichOwnerIds(nodes);
     return {
       nodes,
       edges,
@@ -390,6 +395,8 @@ export class ProjectGraphService {
         extractText(record[EDGE_FIELD.NAME]) ||
         '依赖',
       critical: Boolean(record[EDGE_FIELD.CRITICAL]),
+      kind:
+        extractText(record[EDGE_FIELD.TYPE]) === '主树' ? 'tree' : 'cross',
     };
   }
 
@@ -570,13 +577,57 @@ function toNewEdgeFields(
   return {
     [EDGE_FIELD.NAME]: `${edge.source}-${edge.target}`,
     [EDGE_FIELD.EDGE_ID]: `edge-${Date.now()}`,
-    [EDGE_FIELD.TYPE]: '跨节点',
+    [EDGE_FIELD.TYPE]: edge.kind === 'tree' ? '主树' : '跨节点',
     [EDGE_FIELD.LABEL]: edge.label || '关联',
     [EDGE_FIELD.CRITICAL]: Boolean(edge.critical),
     [EDGE_FIELD.SORT]: 0,
     [EDGE_FIELD.SOURCE]: toLinkField(edge.source),
     [EDGE_FIELD.TARGET]: toLinkField(edge.target),
   };
+}
+
+function reconcileGraphRelationships(
+  nodes: ProjectGraphNode[],
+  edges: ProjectGraphEdge[],
+): { nodes: ProjectGraphNode[]; edges: ProjectGraphEdge[] } {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const incomingByTarget = new Map<string, ProjectGraphEdge[]>();
+  edges.forEach((edge) => {
+    const incoming = incomingByTarget.get(edge.target) ?? [];
+    incoming.push(edge);
+    incomingByTarget.set(edge.target, incoming);
+  });
+  const treeEdgeIds = new Set<string>();
+
+  const reconciledNodes = nodes.map((node) => {
+    if (node.lane === 'hardware') {
+      return node;
+    }
+    const incoming = (incomingByTarget.get(node.id) ?? []).filter((edge) =>
+      nodeIds.has(edge.source),
+    );
+    const linkedParentId = node.linkedIds.find(
+      (parentId) => parentId !== node.id && nodeIds.has(parentId),
+    );
+    const parentEdge = linkedParentId
+      ? incoming.find((edge) => edge.source === linkedParentId)
+      : incoming.find((edge) => edge.kind === 'tree') ??
+        (incoming.length === 1 ? incoming[0] : undefined);
+    if (parentEdge) {
+      treeEdgeIds.add(parentEdge.id);
+    }
+    if (linkedParentId || !parentEdge) {
+      return node;
+    }
+    return { ...node, linkedIds: [parentEdge.source] };
+  });
+
+  const reconciledEdges = edges.map((edge) =>
+    treeEdgeIds.has(edge.id) && edge.kind !== 'tree'
+      ? { ...edge, kind: 'tree' as const }
+      : edge,
+  );
+  return { nodes: reconciledNodes, edges: reconciledEdges };
 }
 
 function ownerToBaseFieldStatic(owner: ProjectOwner | null): number[] {

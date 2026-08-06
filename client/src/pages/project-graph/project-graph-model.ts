@@ -163,6 +163,7 @@ export function createEdge(
   source: string,
   target: string,
   label: string,
+  kind: ProjectGraphEdge['kind'] = 'cross',
 ): ProjectGraphEdge {
   return {
     id: `${source}-${target}-${Date.now()}`,
@@ -170,6 +171,7 @@ export function createEdge(
     target,
     label: label.trim() || '关联',
     critical: false,
+    kind,
   };
 }
 
@@ -680,6 +682,12 @@ function findDirectParentId(
   }
 
   const edgeParent: ProjectGraphEdge | undefined = edges.find(
+    (edge: ProjectGraphEdge) =>
+      edge.target === node.id &&
+      edge.source !== node.id &&
+      edge.kind === 'tree' &&
+      nodeMap.has(edge.source),
+  ) ?? edges.find(
     (edge: ProjectGraphEdge) =>
       edge.target === node.id &&
       edge.source !== node.id &&

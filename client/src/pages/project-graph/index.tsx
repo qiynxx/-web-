@@ -485,6 +485,7 @@ function ProjectGraphPage() {
                 parentId,
                 nextNode.id,
                 lane === 'hardware' ? '演进' : '派生',
+                'tree',
               ),
             ]
           : currentGraph.edges;
@@ -1258,7 +1259,7 @@ function GraphCanvas({
             if (!source || !target) {
               return null;
             }
-            const treeEdge: boolean = isTreeEdge(source, target);
+            const treeEdge: boolean = isTreeEdge(edge, source, target);
             const highlighted: boolean = edge.id === selectedEdgeId;
             const visibleEdge: boolean =
               treeEdge || highlighted || edge.critical;
@@ -1280,7 +1281,10 @@ function GraphCanvas({
                 key={edge.id}
                 onClick={() => onSelectEdge(edge.id)}
               >
-                <path className={edgeClassName} d={edgePath(source, target)} />
+                <path
+                  className={edgeClassName}
+                  d={edgePath(edge, source, target)}
+                />
                 {highlighted ? (
                   <text
                     className="edge-label"
@@ -1476,16 +1480,24 @@ function HardwareThumbnail({ node }: HardwareThumbnailProps) {
 }
 
 function isTreeEdge(
+  edge: ProjectGraphEdge,
   source: ProjectGraphNode,
   target: ProjectGraphNode,
 ): boolean {
+  if (edge.kind === 'tree') {
+    return true;
+  }
   if (source.lane === 'hardware' && target.lane === 'hardware') {
     return true;
   }
   return target.linkedIds[0] === source.id;
 }
 
-function edgePath(source: ProjectGraphNode, target: ProjectGraphNode): string {
+function edgePath(
+  edge: ProjectGraphEdge,
+  source: ProjectGraphNode,
+  target: ProjectGraphNode,
+): string {
   const nodeWidth: number = 220;
   const nodeHeight: number = 128;
   const sourceCenterX: number = source.x + nodeWidth / 2;
@@ -1500,7 +1512,7 @@ function edgePath(source: ProjectGraphNode, target: ProjectGraphNode): string {
     ].join(' ');
   }
 
-  if (isTreeEdge(source, target)) {
+  if (isTreeEdge(edge, source, target)) {
     const bendY: number = source.y + nodeHeight + 42;
     return [
       `M ${sourceCenterX} ${source.y + nodeHeight}`,

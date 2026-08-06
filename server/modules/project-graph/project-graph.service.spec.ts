@@ -54,10 +54,33 @@ function createService(options?: { denyMessage?: string }) {
       id: 'rec_edge_1',
       record: {
         '连接ID': 'stable-edge-1',
+        '连接类型': '跨节点',
         '来源节点': [{ id: 'rec_node_1' }],
         '目标节点': [{ id: 'rec_node_2' }],
         '标签': '依赖',
         '关键链路': true,
+      },
+    },
+    {
+      id: 'rec_edge_2',
+      record: {
+        '连接ID': 'stable-edge-2',
+        '连接类型': '跨节点',
+        '来源节点': [{ id: 'rec_node_1' }],
+        '目标节点': [{ id: 'rec_node_3' }],
+        '标签': '关联 A',
+        '关键链路': false,
+      },
+    },
+    {
+      id: 'rec_edge_3',
+      record: {
+        '连接ID': 'stable-edge-3',
+        '连接类型': '跨节点',
+        '来源节点': [{ id: 'rec_node_2' }],
+        '目标节点': [{ id: 'rec_node_3' }],
+        '标签': '关联 B',
+        '关键链路': false,
       },
     },
   ];
@@ -109,12 +132,21 @@ describe('ProjectGraphService Base channel', () => {
       id: 'rec_edge_1',
       source: 'rec_node_1',
       target: 'rec_node_2',
+      kind: 'tree',
     });
+    expect(graph.nodes[1].linkedIds).toEqual(['rec_node_1']);
     expect(graph.nodes[2]).toMatchObject({
       id: 'rec_node_3',
       lane: 'integration',
       kind: 'hardware',
+      linkedIds: [],
     });
+    expect(graph.edges.slice(1)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'rec_edge_2', kind: 'cross' }),
+        expect.objectContaining({ id: 'rec_edge_3', kind: 'cross' }),
+      ]),
+    );
   });
 
   it('updates a displayed record ID with a real user field and epoch date', async () => {
@@ -214,7 +246,7 @@ describe('ProjectGraphService Base channel', () => {
           record: expect.objectContaining({
             '来源节点': ['rec_node_1'],
             '目标节点': ['rec_created'],
-            '连接类型': '跨节点',
+            '连接类型': '主树',
             '标签': '派生',
           }),
         },

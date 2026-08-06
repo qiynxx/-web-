@@ -57,6 +57,7 @@ export interface ProjectGraphEdge {
   target: string;
   label: string;
   critical: boolean;
+  kind?: 'tree' | 'cross';
 }
 
 export interface ProjectMetric {
