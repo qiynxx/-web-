@@ -32,7 +32,6 @@ const EDGE_PLUGIN_ID = 'project_graph_connection_bitable_crud_1';
 
 const BASE_URL =
   'https://my.feishu.cn/base/WC3cb3acOaminMsXKbTcwPKdnMg?table=tblVIjVsxIbuk1QQ&view=vewqWl33qS';
-
 const NODE_FIELD = {
   NAME: '节点名称',
   NODE_ID: '节点ID',
@@ -40,7 +39,8 @@ const NODE_FIELD = {
   GROUP: '分组',
   TYPE: '节点类型',
   STATUS: '状态',
-  OWNER: '负责人',
+  OWNER: '负责人ID',
+  LEGACY_OWNER: '负责人',
   PROGRESS: '进度',
   VERSION: '版本/分支',
   DATE: '日期',
@@ -114,7 +114,22 @@ export class ProjectGraphService {
     if (!node.title) {
       throw new BadRequestException('title is required');
     }
-    await this.pluginAddRecord(NODE_PLUGIN_ID, toNewNodeFields(node));
+    const createdNodeId = await this.pluginAddRecord(
+      NODE_PLUGIN_ID,
+      toNewNodeFields(node),
+    );
+    const parentId = node.linkedIds?.[0];
+    if (parentId) {
+      await this.pluginAddRecord(
+        EDGE_PLUGIN_ID,
+        toNewEdgeFields({
+          source: parentId,
+          target: createdNodeId,
+          label: node.lane === 'hardware' ? '演进' : '派生',
+          critical: false,
+        }),
+      );
+    }
     return this.getGraph();
   }
 
@@ -315,18 +330,18 @@ export class ProjectGraphService {
       recordIdSet,
     );
     const groupValue = extractText(record[NODE_FIELD.GROUP]);
-    const laneValue = toProjectLane(
-      extractText(record[NODE_FIELD.TYPE]),
-      groupValue,
-    );
+    const typeValue = extractText(record[NODE_FIELD.TYPE]);
+    const laneValue = toProjectLane(typeValue, groupValue);
     return {
       id: recordId,
       title: extractText(record[NODE_FIELD.NAME]) || '未命名节点',
       subtitle: extractText(record[NODE_FIELD.SUBTITLE]),
       lane: laneValue,
-      kind: laneToKind(laneValue),
+      kind: toProjectNodeKind(typeValue, laneValue),
       status: toProjectStatus(extractText(record[NODE_FIELD.STATUS])),
-      owner: this.extractOwner(record[NODE_FIELD.OWNER]),
+      owner:
+        this.extractOwner(record[NODE_FIELD.OWNER]) ??
+        this.extractOwner(record[NODE_FIELD.LEGACY_OWNER]),
       progress: normalizeProgress(extractNumber(record[NODE_FIELD.PROGRESS])),
       version: extractText(record[NODE_FIELD.VERSION]),
       date: formatDateValue(record[NODE_FIELD.DATE]),
@@ -513,12 +528,12 @@ function toNodeFields(
 function toNewNodeFields(
   node: CreateProjectGraphNodeRequest,
 ): Record<string, unknown> {
-  return {
+  const fields: Record<string, unknown> = {
     [NODE_FIELD.NAME]: node.title,
     [NODE_FIELD.NODE_ID]: `new-${Date.now()}`,
-    [NODE_FIELD.TYPE]: toBaseLane(node.lane),
+    [NODE_FIELD.GROUP]: toBaseGroup(node.lane),
+    [NODE_FIELD.TYPE]: toBaseNodeType(node.kind, node.lane),
     [NODE_FIELD.STATUS]: toBaseStatus(node.status),
-    [NODE_FIELD.OWNER]: ownerToBaseFieldStatic(node.owner ?? null),
     [NODE_FIELD.PROGRESS]: normalizeProgress(node.progress ?? 0),
     [NODE_FIELD.VERSION]: node.version ?? '',
     [NODE_FIELD.DATE]: toDateTimestamp(node.date),
@@ -528,10 +543,12 @@ function toNewNodeFields(
     [NODE_FIELD.NEXT]: node.nextAction ?? '',
     [NODE_FIELD.RISKS]: (node.risks ?? []).join('\n'),
     [NODE_FIELD.IMAGE]: node.imageUrl ?? '',
-    [NODE_FIELD.PARENT]: toLinkField(node.linkedIds?.[0]),
     [NODE_FIELD.SORT]: 0,
-    [NODE_FIELD.PROJECT]: '本地化 AI 头显',
   };
+  if (node.owner) {
+    fields[NODE_FIELD.OWNER] = ownerToBaseFieldStatic(node.owner);
+  }
+  return fields;
 }
 
 function toEdgeFields(
@@ -553,11 +570,10 @@ function toNewEdgeFields(
   return {
     [EDGE_FIELD.NAME]: `${edge.source}-${edge.target}`,
     [EDGE_FIELD.EDGE_ID]: `edge-${Date.now()}`,
-    [EDGE_FIELD.TYPE]: '关联',
+    [EDGE_FIELD.TYPE]: '跨节点',
     [EDGE_FIELD.LABEL]: edge.label || '关联',
     [EDGE_FIELD.CRITICAL]: Boolean(edge.critical),
     [EDGE_FIELD.SORT]: 0,
-    [EDGE_FIELD.PROJECT]: '本地化 AI 头显',
     [EDGE_FIELD.SOURCE]: toLinkField(edge.source),
     [EDGE_FIELD.TARGET]: toLinkField(edge.target),
   };
@@ -676,12 +692,12 @@ function splitTextList(value: string): string[] {
 
 const STATUS_TO_BASE: Record<ProjectNodeStatus, string> = {
   planned: '规划',
-  active: '正常推进',
+  active: '推进中',
   review: '评审',
   testing: '测试',
   blocked: '阻塞',
   passed: '通过',
-  released: '已发布',
+  released: '发布',
   archived: '归档',
 };
 
@@ -697,7 +713,7 @@ function toProjectStatus(value: string): ProjectNodeStatus {
   if (value.includes('测试') || value.includes('testing')) return 'testing';
   if (value.includes('阻塞') || value.includes('blocked')) return 'blocked';
   if (value.includes('通过') || value.includes('passed')) return 'passed';
-  if (value.includes('已发布') || value.includes('released')) return 'released';
+  if (value.includes('发布') || value.includes('released')) return 'released';
   if (value.includes('归档') || value.includes('archived')) return 'archived';
   return 'planned';
 }
@@ -705,22 +721,58 @@ function toProjectStatus(value: string): ProjectNodeStatus {
 // --- Lane mapping ---
 
 function toProjectLane(typeValue: string, groupValue: string): ProjectLane {
-  const value = `${typeValue} ${groupValue}`.toLowerCase();
-  if (value.includes('硬件') || value.includes('hardware')) return 'hardware';
-  if (value.includes('联调') || value.includes('integration')) return 'integration';
+  const group = groupValue.toLowerCase();
+  if (group.includes('硬件') || group.includes('hardware')) return 'hardware';
+  if (group.includes('联调') || group.includes('integration')) return 'integration';
+  if (group.includes('软件') || group.includes('software')) return 'software';
+
+  const type = typeValue.toLowerCase();
+  if (type.includes('硬件') || type.includes('hardware')) return 'hardware';
+  if (type.includes('联调') || type.includes('integration')) return 'integration';
   return 'software';
 }
 
-function toBaseLane(lane: ProjectLane): string {
-  if (lane === 'hardware') return '硬件';
+function toBaseGroup(lane: ProjectLane): string {
+  if (lane === 'hardware') return '硬件主干';
   if (lane === 'integration') return '联调测试';
-  return '软件';
+  return '软件算法';
 }
 
-function laneToKind(lane: ProjectLane): import('@shared/api.interface').ProjectNodeKind {
-  if (lane === 'hardware') return 'hardware';
-  if (lane === 'integration') return 'integration';
-  return 'software';
+function toProjectNodeKind(
+  typeValue: string,
+  lane: ProjectLane,
+): import('@shared/api.interface').ProjectNodeKind {
+  const type = typeValue.toLowerCase();
+  if (type.includes('项目') || type.includes('project')) return 'project';
+  if (type.includes('问题') || type.includes('issue')) return 'issue';
+  if (type.includes('风险') || type.includes('risk')) return 'risk';
+  if (type.includes('发布') || type.includes('release')) return 'release';
+  if (type.includes('测试') || type.includes('test')) return 'test';
+  if (type.includes('联调') || type.includes('integration')) return 'integration';
+  if (type.includes('硬件') || type.includes('hardware')) return 'hardware';
+  if (type.includes('软件') || type.includes('software')) return 'software';
+  return lane === 'hardware'
+    ? 'hardware'
+    : lane === 'integration'
+      ? 'integration'
+      : 'software';
+}
+
+function toBaseNodeType(
+  kind: import('@shared/api.interface').ProjectNodeKind,
+  lane: ProjectLane,
+): string {
+  const kindLabel: Record<import('@shared/api.interface').ProjectNodeKind, string> = {
+    project: '项目',
+    issue: '问题',
+    hardware: '硬件',
+    software: '软件',
+    integration: '联调',
+    test: '测试',
+    risk: '风险',
+    release: '发布',
+  };
+  return kindLabel[kind] ?? (lane === 'hardware' ? '硬件' : '软件');
 }
 
 function formatNowTime(): string {

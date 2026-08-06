@@ -8,15 +8,21 @@ import { ProjectGraphService } from './project-graph.service';
 const NODE_PLUGIN_ID = 'project_graph_node_crud_1';
 const EDGE_PLUGIN_ID = 'project_graph_connection_bitable_crud_1';
 
-function nodeRecord(id: string, stableId: string, ownerId: number) {
+function nodeRecord(
+  id: string,
+  stableId: string,
+  ownerId: number,
+  group = '软件算法',
+  type = '软件',
+) {
   return {
     id,
     record: {
       '节点名称': { text: stableId },
       '节点ID': stableId,
       '副标题': '',
-      '分组': '软件',
-      '节点类型': '软件',
+      '分组': group,
+      '节点类型': type,
       '状态': '正常推进',
       '负责人': [ownerId],
       '进度': 20,
@@ -41,6 +47,7 @@ function createService(options?: { denyMessage?: string }) {
   const nodes = [
     nodeRecord('rec_node_1', 'stable-1', 101),
     nodeRecord('rec_node_2', 'stable-2', 202),
+    nodeRecord('rec_node_3', 'stable-3', 303, '联调测试', '硬件'),
   ];
   const edges = [
     {
@@ -103,6 +110,11 @@ describe('ProjectGraphService Base channel', () => {
       source: 'rec_node_1',
       target: 'rec_node_2',
     });
+    expect(graph.nodes[2]).toMatchObject({
+      id: 'rec_node_3',
+      lane: 'integration',
+      kind: 'hardware',
+    });
   });
 
   it('updates a displayed record ID with a real user field and epoch date', async () => {
@@ -125,7 +137,7 @@ describe('ProjectGraphService Base channel', () => {
         {
           id: 'rec_node_1',
           record: {
-            '负责人': [303],
+            '负责人ID': [303],
             '日期': Date.UTC(2026, 7, 4),
           },
         },
@@ -182,11 +194,28 @@ describe('ProjectGraphService Base channel', () => {
           record: expect.objectContaining({
             '节点名称': '新节点',
             '副标题': '副标题',
-            '负责人': [303],
+            '分组': '软件算法',
+            '节点类型': '软件',
+            '负责人ID': [303],
             '日期': Date.UTC(2026, 7, 5),
             '标签': 'Base，人员',
             '图片URL': 'https://example.com/image.png',
-            '父节点': ['rec_node_1'],
+          }),
+        },
+      ],
+    });
+    const parentEdgeCreation = calls.find(
+      (call) =>
+        call.pluginId === EDGE_PLUGIN_ID && call.action === 'batchAddRecords',
+    );
+    expect(parentEdgeCreation?.input).toEqual({
+      records: [
+        {
+          record: expect.objectContaining({
+            '来源节点': ['rec_node_1'],
+            '目标节点': ['rec_created'],
+            '连接类型': '跨节点',
+            '标签': '派生',
           }),
         },
       ],
@@ -226,6 +255,7 @@ describe('ProjectGraphService Base channel', () => {
           record: expect.objectContaining({
             '来源节点': ['rec_node_1'],
             '目标节点': ['rec_node_2'],
+            '连接类型': '跨节点',
           }),
         },
       ],

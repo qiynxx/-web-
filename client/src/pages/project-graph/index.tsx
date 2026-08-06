@@ -1675,7 +1675,7 @@ function FlowEditor({
 
       <div className="editor-grid">
         <label className="field-stack">
-          <span>新增类型</span>
+          <span>新增分组</span>
           <select
             className="editor-select"
             onChange={(event: React.ChangeEvent<HTMLSelectElement>) =>

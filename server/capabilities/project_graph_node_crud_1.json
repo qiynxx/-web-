@@ -62,12 +62,20 @@
         "type": 3
       },
       {
-        "name": "负责人",
+        "name": "负责人ID",
         "readable": true,
         "type": 11,
         "writeable": true,
         "bizType": "User",
-        "id": "fld_owner"
+        "id": "fldkvqhboC"
+      },
+      {
+        "name": "负责人",
+        "readable": true,
+        "type": 1,
+        "writeable": false,
+        "bizType": "Text",
+        "id": "fldXnhX7lE"
       },
       {
         "readable": true,
@@ -139,22 +147,6 @@
         "name": "排序",
         "readable": true,
         "type": 2,
-        "writeable": true
-      },
-      {
-        "name": "所属项目",
-        "readable": true,
-        "type": 1,
-        "writeable": true,
-        "bizType": "Text",
-        "id": "fld_project"
-      },
-      {
-        "bizType": "SingleLink",
-        "id": "fld_parent_node",
-        "name": "父节点",
-        "readable": true,
-        "type": 18,
         "writeable": true
       }
     ]
