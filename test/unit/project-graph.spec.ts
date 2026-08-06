@@ -4,6 +4,7 @@ import {
   buildStaticMetrics,
   buildStaticNodes,
 } from '../../server/modules/project-graph/project-graph-static';
+import { findAddedNode } from '../../client/src/pages/project-graph/project-graph-model';
 
 describe('project-graph-static', () => {
   describe('buildStaticNodes', () => {
@@ -11,7 +12,9 @@ describe('project-graph-static', () => {
       const nodes = buildStaticNodes();
       expect(nodes.length).toBeGreaterThan(0);
       nodes.forEach((node) => {
-        expect(node.owner === null || typeof node.owner === 'object').toBe(true);
+        expect(node.owner === null || typeof node.owner === 'object').toBe(
+          true,
+        );
         if (node.owner) {
           expect(typeof node.owner.apaasUserId).toBe('string');
           expect(typeof node.owner.name).toBe('string');
@@ -71,6 +74,21 @@ describe('project-graph-static', () => {
         expect(typeof baseline.id).toBe('string');
         expect(typeof baseline.name).toBe('string');
       });
+    });
+  });
+
+  describe('findAddedNode', () => {
+    it('finds the record created by the Base response', () => {
+      const previousNodes = buildStaticNodes();
+      const createdNode = {
+        ...previousNodes[0],
+        id: 'rec_new_branch',
+        title: '新软件分支',
+      };
+
+      expect(
+        findAddedNode(previousNodes, [...previousNodes, createdNode]),
+      ).toEqual(createdNode);
     });
   });
 });

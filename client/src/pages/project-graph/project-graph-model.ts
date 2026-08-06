@@ -104,6 +104,16 @@ export type EditableNodePatch = Pick<
 
 export type NodeEditMap = Record<string, EditableNodePatch>;
 
+export function findAddedNode(
+  previousNodes: ProjectGraphNode[],
+  nextNodes: ProjectGraphNode[],
+): ProjectGraphNode | undefined {
+  const previousIds = new Set(
+    previousNodes.map((node: ProjectGraphNode) => node.id),
+  );
+  return nextNodes.find((node: ProjectGraphNode) => !previousIds.has(node.id));
+}
+
 export function createDefaultNode(
   lane: ProjectLane,
   parentId: string | null,
@@ -121,7 +131,11 @@ export function createDefaultNode(
     integration: '新联调测试',
   };
   const kind: ProjectGraphNode['kind'] =
-    lane === 'hardware' ? 'hardware' : lane === 'software' ? 'software' : 'test';
+    lane === 'hardware'
+      ? 'hardware'
+      : lane === 'software'
+        ? 'software'
+        : 'test';
 
   return {
     id: `${prefix[lane]}-custom-${timestamp}`,
@@ -249,7 +263,9 @@ export function layoutGraph(
   );
   const hardwareNodes: ProjectGraphNode[] = nodes
     .filter((node: ProjectGraphNode) => node.lane === 'hardware')
-    .sort((left: ProjectGraphNode, right: ProjectGraphNode) => left.x - right.x);
+    .sort(
+      (left: ProjectGraphNode, right: ProjectGraphNode) => left.x - right.x,
+    );
 
   const hardwareIds: Set<string> = new Set(
     hardwareNodes.map((node: ProjectGraphNode) => node.id),
@@ -289,7 +305,13 @@ export function layoutGraph(
   hardwareNodes.forEach((node: ProjectGraphNode) => {
     const subtreeWidth: number = Math.max(
       nodeWidth,
-      getChildrenWidth(node.id, childrenByNode, visitedWidths, nodeWidth, branchColumnGap),
+      getChildrenWidth(
+        node.id,
+        childrenByNode,
+        visitedWidths,
+        nodeWidth,
+        branchColumnGap,
+      ),
     );
     subtreeLeftByHardware.set(node.id, cursorX);
     subtreeWidthByHardware.set(node.id, subtreeWidth);
@@ -298,8 +320,10 @@ export function layoutGraph(
 
   const positionedHardware: ProjectGraphNode[] = hardwareNodes.map(
     (node: ProjectGraphNode) => {
-      const subtreeLeft: number = subtreeLeftByHardware.get(node.id) ?? leftPadding;
-      const subtreeWidth: number = subtreeWidthByHardware.get(node.id) ?? nodeWidth;
+      const subtreeLeft: number =
+        subtreeLeftByHardware.get(node.id) ?? leftPadding;
+      const subtreeWidth: number =
+        subtreeWidthByHardware.get(node.id) ?? nodeWidth;
       return {
         ...node,
         x: subtreeLeft + subtreeWidth / 2 - nodeWidth / 2,
@@ -317,9 +341,9 @@ export function layoutGraph(
     if (sortedChildren.length === 0) {
       return;
     }
-      const subtreeLeft: number =
+    const subtreeLeft: number =
       subtreeLeftByHardware.get(hardwareNode.id) ?? leftPadding;
-      const subtreeWidth: number =
+    const subtreeWidth: number =
       subtreeWidthByHardware.get(hardwareNode.id) ?? nodeWidth;
     const childrenWidth: number = getChildrenWidth(
       hardwareNode.id,
@@ -402,7 +426,8 @@ export function readNodeEdits(): NodeEditMap {
     return {};
   }
 
-  const rawValue: string | null = window.localStorage.getItem(GRAPH_STORAGE_KEY);
+  const rawValue: string | null =
+    window.localStorage.getItem(GRAPH_STORAGE_KEY);
   if (!rawValue) {
     return {};
   }
@@ -445,10 +470,7 @@ export function writeGraphDraft(draft: ProjectGraphDraft): void {
   if (typeof window === 'undefined') {
     return;
   }
-  window.localStorage.setItem(
-    GRAPH_DRAFT_STORAGE_KEY,
-    JSON.stringify(draft),
-  );
+  window.localStorage.setItem(GRAPH_DRAFT_STORAGE_KEY, JSON.stringify(draft));
 }
 
 export function readProjectLibrary(): ProjectLibraryItem[] {
@@ -456,9 +478,8 @@ export function readProjectLibrary(): ProjectLibraryItem[] {
     return [];
   }
 
-  const rawValue: string | null = window.localStorage.getItem(
-    PROJECT_LIBRARY_KEY,
-  );
+  const rawValue: string | null =
+    window.localStorage.getItem(PROJECT_LIBRARY_KEY);
   if (!rawValue) {
     return [];
   }
@@ -731,21 +752,24 @@ function getChildrenWidth(
     return nodeWidth;
   }
 
-  return children.reduce((totalWidth: number, child: ProjectGraphNode, index: number) => {
-    const gapWidth: number = index === 0 ? 0 : branchColumnGap;
-    return (
-      totalWidth +
-      gapWidth +
-      getSubtreeWidth(
-        child.id,
-        childrenByNode,
-        visitedWidths,
-        nodeWidth,
-        branchColumnGap,
-        activeIds,
-      )
-    );
-  }, 0);
+  return children.reduce(
+    (totalWidth: number, child: ProjectGraphNode, index: number) => {
+      const gapWidth: number = index === 0 ? 0 : branchColumnGap;
+      return (
+        totalWidth +
+        gapWidth +
+        getSubtreeWidth(
+          child.id,
+          childrenByNode,
+          visitedWidths,
+          nodeWidth,
+          branchColumnGap,
+          activeIds,
+        )
+      );
+    },
+    0,
+  );
 }
 
 function placeBranchSubtree(
@@ -898,7 +922,9 @@ function isProjectGraphEdge(value: unknown): value is ProjectGraphEdge {
 }
 
 function isProjectLane(value: unknown): value is ProjectLane {
-  return value === 'hardware' || value === 'software' || value === 'integration';
+  return (
+    value === 'hardware' || value === 'software' || value === 'integration'
+  );
 }
 
 function stripJsonExtension(fileName: string): string {

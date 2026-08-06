@@ -52,6 +52,7 @@ import {
   createEdge,
   DEFAULT_PROJECT_ID,
   filterNodes,
+  findAddedNode,
   LANE_LABELS,
   laneOptions,
   layoutGraph,
@@ -110,22 +111,53 @@ function userToProjectOwner(user: User | null): ProjectOwner | null {
   };
 }
 
+function getRequestErrorMessage(error: unknown): string {
+  if (!error || typeof error !== 'object') {
+    return '未知错误';
+  }
+  const candidate = error as {
+    message?: unknown;
+    response?: {
+      data?: {
+        message?: unknown;
+        error?: { message?: unknown };
+      };
+    };
+  };
+  const messages: unknown[] = [
+    candidate.response?.data?.message,
+    candidate.response?.data?.error?.message,
+    candidate.message,
+  ];
+  return (
+    messages.find(
+      (message: unknown): message is string =>
+        typeof message === 'string' && message.trim().length > 0,
+    ) ?? '未知错误'
+  );
+}
+
 function ProjectGraphPage() {
   const [graph, setGraph] = useState<ProjectGraphResponse | null>(null);
-  const [projectLibrary, setProjectLibrary] = useState<ProjectLibraryItem[]>([]);
+  const [projectLibrary, setProjectLibrary] = useState<ProjectLibraryItem[]>(
+    [],
+  );
   const [activeProjectId, setActiveProjectId] =
     useState<string>(DEFAULT_PROJECT_ID);
   const [selectedId, setSelectedId] = useState<string>('hw-gen21');
   const [selectedEdgeId, setSelectedEdgeId] = useState<string>('');
   const [laneFilter, setLaneFilter] = useState<ProjectLane | 'all'>('all');
-  const [statusFilter, setStatusFilter] =
-    useState<ProjectNodeStatus | 'all'>('all');
+  const [statusFilter, setStatusFilter] = useState<ProjectNodeStatus | 'all'>(
+    'all',
+  );
   const [query, setQuery] = useState<string>('');
   const [compactMode, setCompactMode] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>('');
   const [savedAt, setSavedAt] = useState<string>('');
+  const [creatingNode, setCreatingNode] = useState<boolean>(false);
   const baseSyncTimersRef = useRef<Record<string, number>>({});
+  const creatingNodeRef = useRef<boolean>(false);
   const ownerIds = useMemo(
     () => [
       ...new Set(
@@ -222,7 +254,7 @@ function ProjectGraphPage() {
         const exists: boolean = nextGraph.nodes.some(
           (node: ProjectGraphNode) => node.id === currentId,
         );
-        return exists ? currentId : nextGraph.nodes[0]?.id ?? '';
+        return exists ? currentId : (nextGraph.nodes[0]?.id ?? '');
       });
       setSelectedEdgeId('');
     } catch {
@@ -268,10 +300,7 @@ function ProjectGraphPage() {
       };
       persistCurrentGraph(nextGraph);
       if (isDefaultBaseGraph(nextGraph)) {
-        queueBaseNodeSync(
-          selectedId,
-          patch as UpdateProjectGraphNodeRequest,
-        );
+        queueBaseNodeSync(selectedId, patch as UpdateProjectGraphNodeRequest);
       } else {
         setSavedAt(formatSavedTime());
       }
@@ -280,10 +309,7 @@ function ProjectGraphPage() {
   }
 
   function isDefaultBaseGraph(currentGraph: ProjectGraphResponse): boolean {
-    return (
-      activeProjectId === DEFAULT_PROJECT_ID &&
-      !!currentGraph.base
-    );
+    return activeProjectId === DEFAULT_PROJECT_ID && !!currentGraph.base;
   }
 
   function queueBaseNodeSync(
@@ -319,17 +345,28 @@ function ProjectGraphPage() {
     }
   }
 
-  function applyServerGraph(nextGraph: ProjectGraphResponse): void {
+  function applyServerGraph(
+    nextGraph: ProjectGraphResponse,
+    preferredSelectedId?: string,
+  ): void {
     const normalizedGraph: ProjectGraphResponse = {
       ...nextGraph,
       metrics: buildUiMetrics(nextGraph.nodes),
     };
     setGraph(normalizedGraph);
     setSelectedId((currentId: string) => {
+      if (
+        preferredSelectedId &&
+        normalizedGraph.nodes.some(
+          (node: ProjectGraphNode) => node.id === preferredSelectedId,
+        )
+      ) {
+        return preferredSelectedId;
+      }
       const exists: boolean = normalizedGraph.nodes.some(
         (node: ProjectGraphNode) => node.id === currentId,
       );
-      return exists ? currentId : normalizedGraph.nodes[0]?.id ?? '';
+      return exists ? currentId : (normalizedGraph.nodes[0]?.id ?? '');
     });
     setSelectedEdgeId((currentId: string) => {
       const exists: boolean = normalizedGraph.edges.some(
@@ -341,18 +378,35 @@ function ProjectGraphPage() {
     setError('');
   }
 
-  async function writeBaseNode(
-    node: ProjectGraphNode,
-  ): Promise<void> {
+  async function writeBaseNode(node: ProjectGraphNode): Promise<void> {
+    if (creatingNodeRef.current) {
+      return;
+    }
+    creatingNodeRef.current = true;
+    setCreatingNode(true);
+    const previousNodes: ProjectGraphNode[] = graph?.nodes ?? [];
     try {
       const { id: _id, sourceRecordId: _sourceRecordId, ...payload } = node;
       const nextGraph: ProjectGraphResponse =
         await projectGraph.createProjectNode(
           payload as CreateProjectGraphNodeRequest,
         );
-      applyServerGraph(nextGraph);
-    } catch {
-      setError('Base 节点创建失败：请确认已登录且对该多维表格有编辑权限');
+      const createdNode: ProjectGraphNode | undefined = findAddedNode(
+        previousNodes,
+        nextGraph.nodes,
+      );
+      applyServerGraph(nextGraph, createdNode?.id);
+      setSavedAt(
+        createdNode
+          ? `已新建“${createdNode.title}”并写回 Base ${formatSavedTime()}`
+          : `节点已写回 Base ${formatSavedTime()}`,
+      );
+    } catch (requestError: unknown) {
+      setError(`Base 节点创建失败：${getRequestErrorMessage(requestError)}`);
+      setSavedAt('新建失败');
+    } finally {
+      creatingNodeRef.current = false;
+      setCreatingNode(false);
     }
   }
 
@@ -427,7 +481,11 @@ function ProjectGraphPage() {
         parentId && parentId !== nextNode.id
           ? [
               ...currentGraph.edges,
-              createEdge(parentId, nextNode.id, lane === 'hardware' ? '演进' : '派生'),
+              createEdge(
+                parentId,
+                nextNode.id,
+                lane === 'hardware' ? '演进' : '派生',
+              ),
             ]
           : currentGraph.edges;
       const nextNodes: ProjectGraphNode[] = [...currentGraph.nodes, nextNode];
@@ -561,7 +619,7 @@ function ProjectGraphPage() {
       ];
       const nextNodes: ProjectGraphNode[] = currentGraph.nodes.map(
         (node: ProjectGraphNode) =>
-              node.id === targetId
+          node.id === targetId
             ? {
                 ...node,
                 linkedIds: [
@@ -677,9 +735,12 @@ function ProjectGraphPage() {
       return;
     }
 
-    const currentName: string = activeProjectId === DEFAULT_PROJECT_ID
-      ? '默认头戴项目'
-      : projectLibrary.find((item: ProjectLibraryItem) => item.id === activeProjectId)?.name ?? '未命名项目';
+    const currentName: string =
+      activeProjectId === DEFAULT_PROJECT_ID
+        ? '默认头戴项目'
+        : (projectLibrary.find(
+            (item: ProjectLibraryItem) => item.id === activeProjectId,
+          )?.name ?? '未命名项目');
     const projectName: string = `${currentName} 副本`;
     const item: ProjectLibraryItem = createProjectLibraryItem(
       projectName,
@@ -708,19 +769,19 @@ function ProjectGraphPage() {
     try {
       const fileText: string = await file.text();
       const parsedValue: unknown = JSON.parse(fileText);
-      const importedGraph: ProjectGraphResponse | null = normalizeImportedProject(
-        parsedValue,
-        graph,
-        file.name,
-      );
+      const importedGraph: ProjectGraphResponse | null =
+        normalizeImportedProject(parsedValue, graph, file.name);
       if (!importedGraph) {
         setError('导入失败：文件不是有效的项目图谱 JSON');
         return;
       }
 
-      const importedName: string = activeProjectId === DEFAULT_PROJECT_ID
-        ? '导入项目'
-        : projectLibrary.find((item: ProjectLibraryItem) => item.id === activeProjectId)?.name ?? '导入项目';
+      const importedName: string =
+        activeProjectId === DEFAULT_PROJECT_ID
+          ? '导入项目'
+          : (projectLibrary.find(
+              (item: ProjectLibraryItem) => item.id === activeProjectId,
+            )?.name ?? '导入项目');
       const item: ProjectLibraryItem = createProjectLibraryItem(
         importedName,
         importedGraph,
@@ -745,9 +806,12 @@ function ProjectGraphPage() {
       return;
     }
 
-    const exportName: string = activeProjectId === DEFAULT_PROJECT_ID
-      ? '默认头戴项目'
-      : projectLibrary.find((item: ProjectLibraryItem) => item.id === activeProjectId)?.name ?? '项目图谱';
+    const exportName: string =
+      activeProjectId === DEFAULT_PROJECT_ID
+        ? '默认头戴项目'
+        : (projectLibrary.find(
+            (item: ProjectLibraryItem) => item.id === activeProjectId,
+          )?.name ?? '项目图谱');
     const fileName: string = `${exportName}.json`;
     const blob: Blob = new Blob([JSON.stringify(graph, null, 2)], {
       type: 'application/json',
@@ -778,7 +842,9 @@ function ProjectGraphPage() {
   }, [filteredNodes, graph]);
 
   const selectedNode: ProjectGraphNode | undefined = useMemo(() => {
-    return graph?.nodes.find((node: ProjectGraphNode) => node.id === selectedId);
+    return graph?.nodes.find(
+      (node: ProjectGraphNode) => node.id === selectedId,
+    );
   }, [graph, selectedId]);
 
   const selectedEdge: ProjectGraphEdge | undefined = useMemo(() => {
@@ -817,7 +883,13 @@ function ProjectGraphPage() {
             <GitBranch />
             硬件主干 / 软件分支
           </div>
-          <h1>{activeProjectId === DEFAULT_PROJECT_ID ? '默认头戴项目' : projectLibrary.find((item: ProjectLibraryItem) => item.id === activeProjectId)?.name ?? '未命名项目'}</h1>
+          <h1>
+            {activeProjectId === DEFAULT_PROJECT_ID
+              ? '默认头戴项目'
+              : (projectLibrary.find(
+                  (item: ProjectLibraryItem) => item.id === activeProjectId,
+                )?.name ?? '未命名项目')}
+          </h1>
           <p>
             横向跟踪慢节奏硬件版本，纵向展开每个硬件版本下的软件算法、
             联调测试和风险闭环。
@@ -871,7 +943,11 @@ function ProjectGraphPage() {
             恢复默认
           </Button>
           <Button asChild>
-            <UniversalLink to={graph.base?.url ?? '#'} rel="noreferrer" target="_blank">
+            <UniversalLink
+              to={graph.base?.url ?? '#'}
+              rel="noreferrer"
+              target="_blank"
+            >
               <ArrowUpRight />
               打开 Base
             </UniversalLink>
@@ -886,11 +962,7 @@ function ProjectGraphPage() {
         >
           <div>
             <strong>{graph.base ? 'Base 多维表格' : '本地静态数据'}</strong>
-            <span>
-              {graph.base
-                ? '多维表格作为数据库'
-                : '后端静态兆底'}
-            </span>
+            <span>{graph.base ? '多维表格作为数据库' : '后端静态兆底'}</span>
           </div>
           {graph.message ? <p>{graph.message}</p> : null}
           <Badge variant="outline">
@@ -945,7 +1017,9 @@ function ProjectGraphPage() {
               value={statusFilter}
             />
             <button
-              className={compactMode ? 'compact-toggle active' : 'compact-toggle'}
+              className={
+                compactMode ? 'compact-toggle active' : 'compact-toggle'
+              }
               onClick={() => setCompactMode((current: boolean) => !current)}
               type="button"
             >
@@ -954,6 +1028,7 @@ function ProjectGraphPage() {
           </div>
 
           <GraphCanvas
+            creatingNode={creatingNode}
             layout={graphLayout}
             onAddChild={addChildNode}
             onConnectNodes={addConnectionEdge}
@@ -976,6 +1051,7 @@ function ProjectGraphPage() {
             />
           ) : null}
           <FlowEditor
+            creatingNode={creatingNode}
             edges={graph.edges}
             nodes={graph.nodes}
             onAddNode={addNode}
@@ -1025,6 +1101,7 @@ function SegmentedControl<T extends string>({
 }
 
 interface GraphCanvasProps {
+  creatingNode: boolean;
   layout: GraphLayout;
   selectedId: string;
   selectedEdgeId: string;
@@ -1043,6 +1120,7 @@ interface DragConnectionState {
 }
 
 function GraphCanvas({
+  creatingNode,
   layout,
   selectedId,
   selectedEdgeId,
@@ -1053,6 +1131,7 @@ function GraphCanvas({
   onDeleteEdge,
   onDeleteNode,
 }: GraphCanvasProps) {
+  const canvasRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [dragConnection, setDragConnection] =
     useState<DragConnectionState | null>(null);
@@ -1061,17 +1140,56 @@ function GraphCanvas({
       layout.nodes.map((node: ProjectGraphNode) => [node.id, node]),
     );
   }, [layout.nodes]);
-  const selectedLayoutNode: ProjectGraphNode | undefined = nodeMap.get(selectedId);
+  const selectedLayoutNode: ProjectGraphNode | undefined =
+    nodeMap.get(selectedId);
   const selectedRelatedEdges: ProjectGraphEdge[] = layout.edges.filter(
     (edge: ProjectGraphEdge) =>
       edge.source === selectedId || edge.target === selectedId,
   );
 
-  function getStagePoint(
-    event: React.PointerEvent<HTMLElement>,
-  ): { x: number; y: number } {
-    const rect: DOMRect | undefined =
-      stageRef.current?.getBoundingClientRect();
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const selectedNode = stageRef.current?.querySelector<HTMLElement>(
+      '.graph-node.selected',
+    );
+    if (!canvas || !selectedNode) {
+      return;
+    }
+    const margin = 24;
+    const nodeLeft = selectedNode.offsetLeft;
+    const nodeRight = nodeLeft + selectedNode.offsetWidth;
+    const nodeTop = selectedNode.offsetTop;
+    const nodeBottom = nodeTop + selectedNode.offsetHeight;
+    const visibleLeft = canvas.scrollLeft;
+    const visibleRight = visibleLeft + canvas.clientWidth;
+    const visibleTop = canvas.scrollTop;
+    const visibleBottom = visibleTop + canvas.clientHeight;
+    if (
+      nodeLeft >= visibleLeft + margin &&
+      nodeRight <= visibleRight - margin &&
+      nodeTop >= visibleTop + margin &&
+      nodeBottom <= visibleBottom - margin
+    ) {
+      return;
+    }
+    canvas.scrollTo({
+      behavior: 'smooth',
+      left: Math.max(
+        0,
+        nodeLeft - (canvas.clientWidth - selectedNode.offsetWidth) / 2,
+      ),
+      top: Math.max(
+        0,
+        nodeTop - (canvas.clientHeight - selectedNode.offsetHeight) / 2,
+      ),
+    });
+  }, [layout.nodes, selectedId]);
+
+  function getStagePoint(event: React.PointerEvent<HTMLElement>): {
+    x: number;
+    y: number;
+  } {
+    const rect: DOMRect | undefined = stageRef.current?.getBoundingClientRect();
     return {
       x: event.clientX - (rect?.left ?? 0),
       y: event.clientY - (rect?.top ?? 0),
@@ -1111,7 +1229,7 @@ function GraphCanvas({
   }
 
   return (
-    <div className="graph-canvas">
+    <div className="graph-canvas" ref={canvasRef}>
       <div
         className="graph-stage"
         onPointerMove={updateConnectionDrag}
@@ -1121,7 +1239,9 @@ function GraphCanvas({
       >
         <div className="hardware-rail" />
         <div className="stage-label hardware-stage-label">硬件主分支</div>
-        <div className="stage-label software-stage-label">软件 / 算法 / 测试</div>
+        <div className="stage-label software-stage-label">
+          软件 / 算法 / 测试
+        </div>
         <svg
           className="edge-layer"
           height={layout.height}
@@ -1129,14 +1249,19 @@ function GraphCanvas({
           width={layout.width}
         >
           {layout.edges.map((edge: ProjectGraphEdge) => {
-            const source: ProjectGraphNode | undefined = nodeMap.get(edge.source);
-            const target: ProjectGraphNode | undefined = nodeMap.get(edge.target);
+            const source: ProjectGraphNode | undefined = nodeMap.get(
+              edge.source,
+            );
+            const target: ProjectGraphNode | undefined = nodeMap.get(
+              edge.target,
+            );
             if (!source || !target) {
               return null;
             }
             const treeEdge: boolean = isTreeEdge(source, target);
             const highlighted: boolean = edge.id === selectedEdgeId;
-            const visibleEdge: boolean = treeEdge || highlighted || edge.critical;
+            const visibleEdge: boolean =
+              treeEdge || highlighted || edge.critical;
             if (!visibleEdge) {
               return null;
             }
@@ -1202,6 +1327,7 @@ function GraphCanvas({
             <button
               aria-label={`为 ${node.title} 新建子分支`}
               className="node-quick-add"
+              disabled={creatingNode}
               onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
                 event.stopPropagation();
                 onAddChild(node.id);
@@ -1275,7 +1401,8 @@ function GraphCanvas({
                   type="button"
                 >
                   <small>
-                    {source?.title ?? edge.source} → {target?.title ?? edge.target}
+                    {source?.title ?? edge.source} →{' '}
+                    {target?.title ?? edge.target}
                   </small>
                   <strong>{edge.label}</strong>
                   <span
@@ -1323,8 +1450,22 @@ function HardwareThumbnail({ node }: HardwareThumbnailProps) {
         <Image alt="" src={node.imageUrl} />
       ) : (
         <svg aria-hidden="true" viewBox="0 0 90 58">
-          <rect className="device-band" height="10" rx="5" width="72" x="9" y="10" />
-          <rect className="device-body" height="32" rx="10" width="56" x="17" y="18" />
+          <rect
+            className="device-band"
+            height="10"
+            rx="5"
+            width="72"
+            x="9"
+            y="10"
+          />
+          <rect
+            className="device-body"
+            height="32"
+            rx="10"
+            width="56"
+            x="17"
+            y="18"
+          />
           <circle className="device-lens left" cx="35" cy="34" r="7" />
           <circle className="device-lens right" cx="55" cy="34" r="7" />
           <path className="device-trace" d="M 24 24 L 66 24 M 30 46 L 60 46" />
@@ -1393,7 +1534,8 @@ function dragPreviewPath(
   const nodeHeight: number = 128;
   const sourceX: number = source.x + nodeWidth;
   const sourceY: number = source.y + nodeHeight / 2;
-  const bendX: number = sourceX + Math.max(56, (dragConnection.x - sourceX) / 2);
+  const bendX: number =
+    sourceX + Math.max(56, (dragConnection.x - sourceX) / 2);
   return [
     `M ${sourceX} ${sourceY}`,
     `C ${bendX} ${sourceY}`,
@@ -1599,9 +1741,7 @@ function NodeEditor({
         <Save />
         <span>
           {savedAt ||
-            (isBaseBacked
-              ? '表内字段会自动写回 Base'
-              : '修改会自动保存到本机')}
+            (isBaseBacked ? '表内字段会自动写回 Base' : '修改会自动保存到本机')}
         </span>
       </div>
     </section>
@@ -1609,6 +1749,7 @@ function NodeEditor({
 }
 
 interface FlowEditorProps {
+  creatingNode: boolean;
   nodes: ProjectGraphNode[];
   edges: ProjectGraphEdge[];
   selectedId: string;
@@ -1624,6 +1765,7 @@ interface FlowEditorProps {
 }
 
 function FlowEditor({
+  creatingNode,
   nodes,
   edges,
   selectedId,
@@ -1709,11 +1851,14 @@ function FlowEditor({
 
       <Button
         className="full-width-action"
-        onClick={() => onAddNode(newLane, newLane === 'hardware' ? null : parentId)}
+        disabled={creatingNode}
+        onClick={() =>
+          onAddNode(newLane, newLane === 'hardware' ? null : parentId)
+        }
         variant="outline"
       >
         <Plus />
-        新增流程节点
+        {creatingNode ? '正在新建并写回 Base…' : '新增流程节点'}
       </Button>
 
       <div className="divider-line" />
