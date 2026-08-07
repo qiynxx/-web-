@@ -137,6 +137,42 @@ function getRequestErrorMessage(error: unknown): string {
   );
 }
 
+function preserveCreatedNodeRelationship(
+  graph: ProjectGraphResponse,
+  createdNodeId: string,
+  parentId: string,
+  optimisticEdge: ProjectGraphEdge,
+): ProjectGraphResponse {
+  const nodes: ProjectGraphNode[] = graph.nodes.map(
+    (node: ProjectGraphNode) =>
+      node.id === createdNodeId && !node.linkedIds.includes(parentId)
+        ? { ...node, linkedIds: [parentId] }
+        : node,
+  );
+  const hasRelationship: boolean = graph.edges.some(
+    (edge: ProjectGraphEdge) =>
+      edge.source === parentId && edge.target === createdNodeId,
+  );
+  const edges: ProjectGraphEdge[] = hasRelationship
+    ? graph.edges
+    : [
+        ...graph.edges,
+        {
+          ...optimisticEdge,
+          id: `pending-${parentId}-${createdNodeId}`,
+          source: parentId,
+          target: createdNodeId,
+          kind: 'tree',
+        },
+      ];
+  return {
+    ...graph,
+    nodes,
+    edges,
+    metrics: buildUiMetrics(nodes),
+  };
+}
+
 function ProjectGraphPage() {
   const [graph, setGraph] = useState<ProjectGraphResponse | null>(null);
   const [projectLibrary, setProjectLibrary] = useState<ProjectLibraryItem[]>(
@@ -378,13 +414,17 @@ function ProjectGraphPage() {
     setError('');
   }
 
-  async function writeBaseNode(node: ProjectGraphNode): Promise<void> {
+  async function writeBaseNode(
+    node: ProjectGraphNode,
+    previousGraph: ProjectGraphResponse,
+    optimisticEdge?: ProjectGraphEdge,
+  ): Promise<void> {
     if (creatingNodeRef.current) {
       return;
     }
     creatingNodeRef.current = true;
     setCreatingNode(true);
-    const previousNodes: ProjectGraphNode[] = graph?.nodes ?? [];
+    const previousNodes: ProjectGraphNode[] = previousGraph.nodes;
     try {
       const { id: _id, sourceRecordId: _sourceRecordId, ...payload } = node;
       const nextGraph: ProjectGraphResponse =
@@ -395,13 +435,42 @@ function ProjectGraphPage() {
         previousNodes,
         nextGraph.nodes,
       );
-      applyServerGraph(nextGraph, createdNode?.id);
+      const parentId: string | undefined = node.linkedIds[0];
+      const graphWithImmediateRelationship: ProjectGraphResponse =
+        createdNode && parentId && optimisticEdge
+          ? preserveCreatedNodeRelationship(
+              nextGraph,
+              createdNode.id,
+              parentId,
+              optimisticEdge,
+            )
+          : nextGraph;
+      applyServerGraph(graphWithImmediateRelationship, createdNode?.id);
       setSavedAt(
         createdNode
           ? `已新建“${createdNode.title}”并写回 Base ${formatSavedTime()}`
           : `节点已写回 Base ${formatSavedTime()}`,
       );
     } catch (requestError: unknown) {
+      setGraph((currentGraph: ProjectGraphResponse | null) => {
+        if (!currentGraph) {
+          return previousGraph;
+        }
+        const nextNodes: ProjectGraphNode[] = currentGraph.nodes.filter(
+          (currentNode: ProjectGraphNode) => currentNode.id !== node.id,
+        );
+        const nextEdges: ProjectGraphEdge[] = currentGraph.edges.filter(
+          (edge: ProjectGraphEdge) =>
+            edge.source !== node.id && edge.target !== node.id,
+        );
+        return {
+          ...currentGraph,
+          nodes: nextNodes,
+          edges: nextEdges,
+          metrics: buildUiMetrics(nextNodes),
+        };
+      });
+      setSelectedId(node.linkedIds[0] ?? previousGraph.nodes[0]?.id ?? '');
       setError(`Base 节点创建失败：${getRequestErrorMessage(requestError)}`);
       setSavedAt('新建失败');
     } finally {
@@ -463,7 +532,27 @@ function ProjectGraphPage() {
         parentId,
         graph.nodes.length,
       );
-      void writeBaseNode(nextNode);
+      const nextEdge: ProjectGraphEdge | undefined =
+        parentId && parentId !== nextNode.id
+          ? createEdge(
+              parentId,
+              nextNode.id,
+              lane === 'hardware' ? '演进' : '派生',
+              'tree',
+            )
+          : undefined;
+      const nextNodes: ProjectGraphNode[] = [...graph.nodes, nextNode];
+      setGraph({
+        ...graph,
+        nodes: nextNodes,
+        edges: nextEdge ? [...graph.edges, nextEdge] : graph.edges,
+        metrics: buildUiMetrics(nextNodes),
+      });
+      setSelectedId(nextNode.id);
+      setSelectedEdgeId('');
+      setSavedAt('正在写回 Base…');
+      setError('');
+      void writeBaseNode(nextNode, graph, nextEdge);
       return;
     }
 

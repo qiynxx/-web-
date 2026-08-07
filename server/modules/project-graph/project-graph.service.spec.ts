@@ -55,8 +55,8 @@ function createService(options?: { denyMessage?: string }) {
       record: {
         '连接ID': 'stable-edge-1',
         '连接类型': '跨节点',
-        '来源节点': [{ id: 'rec_node_1' }],
-        '目标节点': [{ id: 'rec_node_2' }],
+        '来源节点': { link_record_ids: ['rec_node_1'] },
+        '目标节点': { link_record_ids: ['rec_node_2'] },
         '标签': '依赖',
         '关键链路': true,
       },

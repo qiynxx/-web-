@@ -274,8 +274,10 @@ export class ProjectGraphService {
   // --- Graph assembly ---
 
   private async buildBaseGraph(): Promise<ProjectGraphResponse> {
-    const nodeRecords = await this.searchAllRecords(NODE_PLUGIN_ID);
-    const edgeRecords = await this.searchAllRecords(EDGE_PLUGIN_ID);
+    const [nodeRecords, edgeRecords] = await Promise.all([
+      this.searchAllRecords(NODE_PLUGIN_ID),
+      this.searchAllRecords(EDGE_PLUGIN_ID),
+    ]);
     const nodeIds = new Set<string>(
       nodeRecords.map((r) => r.id),
     );
@@ -702,6 +704,12 @@ function extractLinkIds(value: unknown, recordIdSet: Set<string>): string[] {
   }
   if (typeof value === 'object') {
     const obj = value as Record<string, unknown>;
+    // Base SingleLink fields are returned by the OpenAPI as
+    // { link_record_ids: ['rec...'] }. Keep the legacy variants because the
+    // Miaoda plugin and test fixtures have used more than one representation.
+    if (obj.link_record_ids !== undefined) {
+      return extractLinkIds(obj.link_record_ids, recordIdSet);
+    }
     if (typeof obj.record_ids === 'string' && recordIdSet.has(obj.record_ids)) {
       return [obj.record_ids];
     }
@@ -713,6 +721,9 @@ function extractLinkIds(value: unknown, recordIdSet: Set<string>): string[] {
     const singleId = obj.record_id ?? obj.id;
     if (typeof singleId === 'string' && recordIdSet.has(singleId)) {
       return [singleId];
+    }
+    if (obj.value !== undefined) {
+      return extractLinkIds(obj.value, recordIdSet);
     }
   }
   return [];
