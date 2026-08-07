@@ -152,6 +152,11 @@ export interface ProjectWorkspaceListResponse {
   defaultProjectId: string;
 }
 
+export interface DeleteProjectWorkspaceResponse {
+  deletedProjectId: string;
+  savedAt: string;
+}
+
 export interface CreateProjectWorkspaceRequest {
   name: string;
   description?: string;
@@ -160,6 +165,10 @@ export interface CreateProjectWorkspaceRequest {
   baseUrl?: string;
   nodeTableId?: string;
   edgeTableId?: string;
+}
+
+export interface UpdateProjectWorkspaceRequest {
+  name: string;
 }
 
 export type CreateProjectGraphNodeRequest = Omit<

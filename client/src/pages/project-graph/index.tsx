@@ -45,8 +45,10 @@ import type {
   CreateProjectWorkspaceRequest,
   ProjectWorkspace,
   UpdateProjectGraphNodeRequest,
+  UpdateProjectWorkspaceRequest,
 } from '@shared/api.interface';
 import {
+  buildBaseTableUrl,
   buildUiMetrics,
   clampProgress,
   createDefaultNode,
@@ -68,6 +70,9 @@ import {
 import './project-graph.css';
 import { UniversalLink } from '@lark-apaas/client-toolkit/components/UniversalLink';
 import { Image } from '@client/src/components/ui/image';
+
+const PROJECT_LIBRARY_URL =
+  'https://vcnqhq28cfdm.feishu.cn/wiki/UfSvwXb9SiKnr0kb9PjceJ93nHb?table=tblrpWm6qG55Xssv';
 
 const METRIC_ICON: Record<ProjectMetric['tone'], typeof CircleDot> = {
   neutral: CircleDot,
@@ -185,18 +190,15 @@ function ProjectGraphPage() {
   const [graph, setGraph] = useState<ProjectGraphResponse | null>(null);
   const [projects, setProjects] = useState<ProjectWorkspace[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string>('');
-  const [projectDialogMode, setProjectDialogMode] = useState<
-    'shared-base' | 'linked-base' | null
-  >(null);
+  const [projectDialogOpen, setProjectDialogOpen] = useState<boolean>(false);
   const [projectForm, setProjectForm] = useState({
     name: '',
     description: '',
-    parentId: '',
-    baseUrl: '',
-    nodeTableId: '',
-    edgeTableId: '',
   });
   const [creatingProject, setCreatingProject] = useState<boolean>(false);
+  const [renameDialogOpen, setRenameDialogOpen] = useState<boolean>(false);
+  const [renameProjectName, setRenameProjectName] = useState<string>('');
+  const [renamingProject, setRenamingProject] = useState<boolean>(false);
   const [selectedId, setSelectedId] = useState<string>('hw-gen21');
   const [selectedEdgeId, setSelectedEdgeId] = useState<string>('');
   const [laneFilter, setLaneFilter] = useState<ProjectLane | 'all'>('all');
@@ -278,6 +280,19 @@ function ProjectGraphPage() {
     try {
       const catalog = await projectGraph.listProjectWorkspaces();
       setProjects(catalog.projects);
+      if (catalog.projects.length === 0) {
+        setActiveProjectId('');
+        setGraph({
+          nodes: [],
+          edges: [],
+          metrics: buildUiMetrics([]),
+          baselines: [],
+          writable: false,
+          message: '项目目录为空，请点击左侧“新建项目”创建独立飞书文档。',
+        });
+        setLoading(false);
+        return;
+      }
       const storedProjectId = readActiveProjectId();
       const targetProjectId = catalog.projects.some(
         (project) => project.id === storedProjectId,
@@ -878,42 +893,79 @@ function ProjectGraphPage() {
     void loadGraph(projectId);
   }
 
-  function openProjectDialog(mode: 'shared-base' | 'linked-base'): void {
-    setProjectForm({
-      name: '',
-      description: '',
-      parentId: activeProjectId,
-      baseUrl: '',
-      nodeTableId: '',
-      edgeTableId: '',
-    });
-    setProjectDialogMode(mode);
+  function openProjectDialog(): void {
+    setProjectForm({ name: '', description: '' });
+    setProjectDialogOpen(true);
     setError('');
   }
 
+  function closeProjectDialog(): void {
+    if (creatingProject) return;
+    setProjectDialogOpen(false);
+  }
+
   async function submitProjectForm(): Promise<void> {
-    if (!projectDialogMode || creatingProject) return;
+    const name = projectForm.name.trim();
+    if (!name || creatingProject) return;
+    const feishuWindow = window.open('', '_blank');
     setCreatingProject(true);
     try {
       const request: CreateProjectWorkspaceRequest = {
-        name: projectForm.name,
-        description: projectForm.description,
-        parentId: projectForm.parentId || undefined,
-        source: projectDialogMode,
-        baseUrl: projectForm.baseUrl || undefined,
-        nodeTableId: projectForm.nodeTableId || undefined,
-        edgeTableId: projectForm.edgeTableId || undefined,
+        name,
+        description: projectForm.description.trim(),
+        source: 'linked-base',
       };
       const project = await projectGraph.createProjectWorkspace(request);
-      setProjects((current) => [...current, project]);
-      setProjectDialogMode(null);
+      setProjects((currentProjects) => [...currentProjects, project]);
+      setProjectDialogOpen(false);
       await loadGraph(project.id);
-      setSavedAt(`项目“${project.name}”已加入目录`);
+      if (feishuWindow) {
+        feishuWindow.location.replace(project.base.url || PROJECT_LIBRARY_URL);
+      }
+      setSavedAt(`已创建独立项目文档“${project.name}”`);
       setError('');
     } catch (requestError: unknown) {
+      feishuWindow?.close();
       setError(`项目创建失败：${getRequestErrorMessage(requestError)}`);
     } finally {
       setCreatingProject(false);
+    }
+  }
+
+  function openRenameProjectDialog(): void {
+    if (!activeProject) return;
+    setRenameProjectName(activeProject.name);
+    setRenameDialogOpen(true);
+    setError('');
+  }
+
+  function closeRenameProjectDialog(): void {
+    if (renamingProject) return;
+    setRenameDialogOpen(false);
+  }
+
+  async function submitProjectRename(): Promise<void> {
+    const name = renameProjectName.trim();
+    if (!activeProject || !name || renamingProject) return;
+    setRenamingProject(true);
+    try {
+      const request: UpdateProjectWorkspaceRequest = { name };
+      const updatedProject = await projectGraph.updateProjectWorkspace(
+        activeProject.id,
+        request,
+      );
+      setProjects((currentProjects) =>
+        currentProjects.map((project) =>
+          project.id === updatedProject.id ? updatedProject : project,
+        ),
+      );
+      setRenameDialogOpen(false);
+      setSavedAt(`项目已重命名为“${updatedProject.name}”并同步到飞书`);
+      setError('');
+    } catch (requestError: unknown) {
+      setError(`项目名称修改失败：${getRequestErrorMessage(requestError)}`);
+    } finally {
+      setRenamingProject(false);
     }
   }
 
@@ -969,6 +1021,14 @@ function ProjectGraphPage() {
     (project) => project.id === activeProjectId,
   );
   const projectRows = useMemo(() => buildProjectTreeRows(projects), [projects]);
+  const baseNodeTableUrl = buildBaseTableUrl(
+    graph?.base?.url,
+    graph?.base?.nodeTableId,
+  );
+  const baseEdgeTableUrl = buildBaseTableUrl(
+    graph?.base?.url,
+    graph?.base?.edgeTableId,
+  );
 
   if (loading && !graph) {
     return (
@@ -1003,17 +1063,15 @@ function ProjectGraphPage() {
           <Badge variant="outline">{projects.length}</Badge>
         </div>
         <div className="project-navigation-actions">
-          <Button onClick={() => openProjectDialog('shared-base')} size="sm">
+          <Button onClick={openProjectDialog} size="sm">
             <Plus />
             新建项目
           </Button>
-          <Button
-            onClick={() => openProjectDialog('linked-base')}
-            size="sm"
-            variant="outline"
-          >
-            <Upload />
-            从飞书导入
+          <Button asChild size="sm" variant="outline">
+            <a href={PROJECT_LIBRARY_URL} rel="noreferrer" target="_blank">
+              <ArrowUpRight />
+              项目目录
+            </a>
           </Button>
         </div>
         <nav className="project-tree" aria-label="项目层次">
@@ -1057,6 +1115,14 @@ function ProjectGraphPage() {
             </p>
           </div>
           <div className="header-actions">
+            <Button
+              disabled={!activeProject}
+              onClick={openRenameProjectDialog}
+              variant="outline"
+            >
+              <Pencil />
+              修改项目名称
+            </Button>
             <Button onClick={exportCurrentProject} variant="outline">
               <Download />
               导出
@@ -1069,14 +1135,24 @@ function ProjectGraphPage() {
               <RotateCcw />
               恢复默认
             </Button>
-            <Button asChild>
+            <Button asChild variant="outline">
               <UniversalLink
-                to={graph.base?.url ?? '#'}
+                to={baseNodeTableUrl}
                 rel="noreferrer"
                 target="_blank"
               >
                 <ArrowUpRight />
-                打开 Base
+                节点表
+              </UniversalLink>
+            </Button>
+            <Button asChild variant="outline">
+              <UniversalLink
+                to={baseEdgeTableUrl}
+                rel="noreferrer"
+                target="_blank"
+              >
+                <ArrowUpRight />
+                连线表
               </UniversalLink>
             </Button>
           </div>
@@ -1089,7 +1165,11 @@ function ProjectGraphPage() {
           >
             <div>
               <strong>{graph.base ? 'Base 多维表格' : '本地静态数据'}</strong>
-              <span>{graph.base ? '多维表格作为数据库' : '后端静态兆底'}</span>
+              <span>
+                {graph.base
+                  ? '节点表和连线表保存数据，流程图由 Web 实时渲染'
+                  : '后端静态兜底'}
+              </span>
             </div>
             {graph.message ? <p>{graph.message}</p> : null}
             <Badge variant="outline">
@@ -1197,7 +1277,7 @@ function ProjectGraphPage() {
         </section>
       </div>
 
-      {projectDialogMode ? (
+      {projectDialogOpen ? (
         <div className="project-dialog-backdrop" role="presentation">
           <section
             aria-labelledby="project-dialog-title"
@@ -1207,138 +1287,124 @@ function ProjectGraphPage() {
           >
             <div className="project-dialog-heading">
               <div>
-                <span>
-                  {projectDialogMode === 'linked-base'
-                    ? '从飞书导入'
-                    : '新建项目'}
-                </span>
-                <h2 id="project-dialog-title">
-                  {projectDialogMode === 'linked-base'
-                    ? '绑定已有项目 Base'
-                    : '创建共享 Base 项目空间'}
-                </h2>
+                <span>独立项目</span>
+                <h2 id="project-dialog-title">创建飞书项目文档</h2>
               </div>
-              <button onClick={() => setProjectDialogMode(null)} type="button">
+              <button onClick={closeProjectDialog} type="button">
                 ×
               </button>
             </div>
             <label className="field-stack">
               <span>项目名称</span>
               <Input
+                autoFocus
+                disabled={creatingProject}
                 onChange={(event) =>
                   setProjectForm((current) => ({
                     ...current,
                     name: event.target.value,
                   }))
                 }
-                placeholder="例如：机器人视觉平台"
+                placeholder="例如：ir-slam"
                 value={projectForm.name}
               />
             </label>
             <label className="field-stack">
-              <span>上级项目</span>
-              <select
-                className="editor-select"
-                onChange={(event) =>
-                  setProjectForm((current) => ({
-                    ...current,
-                    parentId: event.target.value,
-                  }))
-                }
-                value={projectForm.parentId}
-              >
-                <option value="">作为一级项目</option>
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field-stack">
               <span>项目说明</span>
               <Textarea
+                disabled={creatingProject}
                 onChange={(event) =>
                   setProjectForm((current) => ({
                     ...current,
                     description: event.target.value,
                   }))
                 }
-                placeholder="项目目标、范围或数据来源"
+                placeholder="项目目标、范围或当前阶段"
                 value={projectForm.description}
               />
             </label>
-            {projectDialogMode === 'linked-base' ? (
-              <div className="project-dialog-base-fields">
-                <label className="field-stack">
-                  <span>飞书 Base 链接</span>
-                  <Input
-                    onChange={(event) =>
-                      setProjectForm((current) => ({
-                        ...current,
-                        baseUrl: event.target.value,
-                      }))
-                    }
-                    placeholder="https://...feishu.cn/base/...?...table=tbl..."
-                    value={projectForm.baseUrl}
-                  />
-                </label>
-                <div className="project-dialog-table-grid">
-                  <label className="field-stack">
-                    <span>节点表 ID</span>
-                    <Input
-                      onChange={(event) =>
-                        setProjectForm((current) => ({
-                          ...current,
-                          nodeTableId: event.target.value,
-                        }))
-                      }
-                      placeholder="可从链接自动识别"
-                      value={projectForm.nodeTableId}
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>关系表 ID</span>
-                    <Input
-                      onChange={(event) =>
-                        setProjectForm((current) => ({
-                          ...current,
-                          edgeTableId: event.target.value,
-                        }))
-                      }
-                      placeholder="tbl..."
-                      value={projectForm.edgeTableId}
-                    />
-                  </label>
-                </div>
-                <p>
-                  导入前会验证节点表和关系表的读取权限，不会修改源 Base 数据。
-                  目标 Base 需要包含与当前模板一致的节点字段和关系字段。
-                </p>
-              </div>
-            ) : (
-              <p className="project-dialog-note">
-                新项目会登记到飞书“项目”表，并在当前 Base 中建立独立项目空间。
-              </p>
-            )}
+            <p className="project-dialog-note">
+              确认后会在“硬件项目管理”下新建一个独立 Base，自动建立“项目节点”和
+              “项目连接关系”两张表及按负责人分列的“人员分工看板”，并登记到
+              “Web项目管理可视化”目录。
+            </p>
+            <ol className="project-sync-steps">
+              <li>飞书创建独立项目文档、数据表和人员分工看板。</li>
+              <li>Web 自动切换到新项目。</li>
+              <li>新文档会在标签页中打开，返回 Web 即可继续可视化编辑。</li>
+            </ol>
             <div className="project-dialog-actions">
               <Button
-                onClick={() => setProjectDialogMode(null)}
+                disabled={creatingProject}
+                onClick={closeProjectDialog}
                 variant="outline"
               >
                 取消
               </Button>
               <Button
-                disabled={
-                  creatingProject ||
-                  !projectForm.name.trim() ||
-                  (projectDialogMode === 'linked-base' &&
-                    (!projectForm.baseUrl.trim() ||
-                      !projectForm.edgeTableId.trim()))
-                }
+                disabled={creatingProject || !projectForm.name.trim()}
                 onClick={() => void submitProjectForm()}
               >
-                {creatingProject ? '正在创建…' : '确认添加'}
+                <Plus />
+                {creatingProject ? '正在创建飞书文档…' : '创建并打开飞书'}
+              </Button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {renameDialogOpen ? (
+        <div className="project-dialog-backdrop" role="presentation">
+          <section
+            aria-labelledby="rename-project-dialog-title"
+            aria-modal="true"
+            className="project-dialog"
+            role="dialog"
+          >
+            <div className="project-dialog-heading">
+              <div>
+                <span>项目设置</span>
+                <h2 id="rename-project-dialog-title">修改项目名称</h2>
+              </div>
+              <button onClick={closeRenameProjectDialog} type="button">
+                ×
+              </button>
+            </div>
+            <label className="field-stack">
+              <span>新项目名称</span>
+              <Input
+                autoFocus
+                disabled={renamingProject}
+                maxLength={100}
+                onChange={(event) => setRenameProjectName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void submitProjectRename();
+                  }
+                }}
+                value={renameProjectName}
+              />
+            </label>
+            <p className="project-dialog-note">
+              保存后会同时更新 Web
+              项目目录、飞书目录表中的“项目名称”，以及该项目独立 Base
+              文档的标题。
+            </p>
+            <div className="project-dialog-actions">
+              <Button
+                disabled={renamingProject}
+                onClick={closeRenameProjectDialog}
+                variant="outline"
+              >
+                取消
+              </Button>
+              <Button
+                disabled={renamingProject || !renameProjectName.trim()}
+                onClick={() => void submitProjectRename()}
+              >
+                <Save />
+                {renamingProject ? '正在同步飞书…' : '保存名称'}
               </Button>
             </div>
           </section>

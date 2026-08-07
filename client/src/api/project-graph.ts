@@ -11,16 +11,20 @@ import type {
   ProjectWorkspaceListResponse,
   UpdateProjectGraphEdgeRequest,
   UpdateProjectGraphNodeRequest,
+  UpdateProjectWorkspaceRequest,
 } from '@shared/api.interface';
 
 function projectParams(projectId?: string): { projectId?: string } {
   return projectId ? { projectId } : {};
 }
 
-export async function listProjectWorkspaces(): Promise<ProjectWorkspaceListResponse> {
+export async function listProjectWorkspaces(
+  refresh = false,
+): Promise<ProjectWorkspaceListResponse> {
   const response = await axiosForBackend({
     url: '/api/project-graph/projects',
     method: 'GET',
+    params: refresh ? { refresh: 'true' } : undefined,
   });
   return response.data as ProjectWorkspaceListResponse;
 }
@@ -31,6 +35,18 @@ export async function createProjectWorkspace(
   const response = await axiosForBackend({
     url: '/api/project-graph/projects',
     method: 'POST',
+    data: request,
+  });
+  return response.data as ProjectWorkspace;
+}
+
+export async function updateProjectWorkspace(
+  projectId: string,
+  request: UpdateProjectWorkspaceRequest,
+): Promise<ProjectWorkspace> {
+  const response = await axiosForBackend({
+    url: `/api/project-graph/projects/${projectId}`,
+    method: 'PATCH',
     data: request,
   });
   return response.data as ProjectWorkspace;

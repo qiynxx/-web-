@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import {
   CapabilityService,
@@ -13,6 +14,7 @@ import type {
   CreateProjectGraphEdgeRequest,
   CreateProjectGraphNodeRequest,
   CreateProjectWorkspaceRequest,
+  DeleteProjectWorkspaceResponse,
   DeleteProjectGraphNodeResponse,
   BaseLinkConfig,
   ProjectGraphEdge,
@@ -25,6 +27,7 @@ import type {
   ProjectWorkspaceListResponse,
   UpdateProjectGraphEdgeRequest,
   UpdateProjectGraphNodeRequest,
+  UpdateProjectWorkspaceRequest,
 } from '@shared/api.interface';
 import {
   buildStaticBaselines,
@@ -32,10 +35,22 @@ import {
   buildStaticMetrics,
   buildStaticNodes,
 } from './project-graph-static';
+import { LarkCliBaseClient, type LarkCliRecord } from './lark-cli-base.client';
 
 const NODE_PLUGIN_ID = 'project_graph_node_crud_1';
 const EDGE_PLUGIN_ID = 'project_graph_connection_bitable_crud_1';
 const PROJECT_PLUGIN_ID = 'project_graph_project_crud_1';
+
+const CATALOG_BASE_TOKEN =
+  process.env.PROJECT_GRAPH_CATALOG_BASE_TOKEN || 'I2hLbxQOsaZYcQsPuSOc3UMWnSe';
+const CATALOG_TABLE_ID =
+  process.env.PROJECT_GRAPH_CATALOG_TABLE_ID || 'tblrpWm6qG55Xssv';
+const CATALOG_WIKI_URL =
+  process.env.PROJECT_GRAPH_CATALOG_WIKI_URL ||
+  'https://vcnqhq28cfdm.feishu.cn/wiki/UfSvwXb9SiKnr0kb9PjceJ93nHb';
+const PROJECT_WIKI_PARENT_NODE_TOKEN =
+  process.env.PROJECT_GRAPH_WIKI_PARENT_NODE_TOKEN ||
+  'EVYowE8rSi4ZWqkCIu8cc2EQn8d';
 
 const DEFAULT_BASE: BaseLinkConfig = {
   baseToken: 'WC3cb3acOaminMsXKbTcwPKdnMg',
@@ -45,6 +60,7 @@ const DEFAULT_BASE: BaseLinkConfig = {
 };
 const DEFAULT_PROJECT_RECORD_ID = 'recvrkK0GUt2Sf';
 const PROJECT_META_MARKER = '[project-graph-meta]';
+const PROJECT_BOARD_VIEW_NAME = '人员分工看板';
 
 const BASE_URL =
   'https://my.feishu.cn/base/WC3cb3acOaminMsXKbTcwPKdnMg?table=tblVIjVsxIbuk1QQ&view=vewqWl33qS';
@@ -57,6 +73,7 @@ const NODE_FIELD = {
   STATUS: '状态',
   OWNER: '负责人ID',
   LEGACY_OWNER: '负责人',
+  TASK_OWNER: '任务负责人',
   PROGRESS: '进度',
   VERSION: '版本/分支',
   DATE: '日期',
@@ -89,6 +106,22 @@ const PROJECT_FIELD = {
   DESCRIPTION: '说明',
 } as const;
 
+const CATALOG_FIELD = {
+  CODE: '项目编码',
+  NAME: '项目名称',
+  STATUS: '状态',
+  DESCRIPTION: '项目说明',
+  PROGRESS: '整体进度',
+  DOCUMENT_URL: '项目文档',
+  BASE_TOKEN: 'Base Token',
+  WIKI_NODE_TOKEN: 'Wiki 节点 Token',
+  NODE_TABLE_ID: '节点表 ID',
+  EDGE_TABLE_ID: '连线表 ID',
+  SOURCE: '创建来源',
+  CREATED_AT: '创建时间',
+  UPDATED_AT: '更新时间',
+} as const;
+
 type PluginRecord = { id: string; record: Record<string, unknown> };
 
 interface ProjectWorkspaceMeta {
@@ -109,25 +142,36 @@ export class ProjectGraphService {
   constructor(
     private readonly capabilityService: CapabilityService,
     private readonly authnService: AuthNPaasService,
+    @Optional() private readonly larkCli?: LarkCliBaseClient,
   ) {}
 
-  async listProjects(): Promise<ProjectWorkspaceListResponse> {
+  async listProjects(
+    forceRefresh = false,
+  ): Promise<ProjectWorkspaceListResponse> {
+    if (forceRefresh) {
+      this.projectCatalogCache = undefined;
+    }
     if (
       this.projectCatalogCache &&
       this.projectCatalogCache.expiresAt > Date.now()
     ) {
       return this.projectCatalogCache.value;
     }
-    const records = await this.searchAllRecords(PROJECT_PLUGIN_ID);
-    const projects = records.map((record, index) =>
-      mapProjectRecord(record, index),
-    );
-    if (projects.length === 0) {
+    const records = this.usesLarkCliStorage()
+      ? await this.larkCli!.listRecords(CATALOG_BASE_TOKEN, CATALOG_TABLE_ID)
+      : await this.searchAllRecords(PROJECT_PLUGIN_ID);
+    const projects = this.usesLarkCliStorage()
+      ? records
+          .map((record, index) => mapCatalogRecord(record, index))
+          .filter((project): project is ProjectWorkspace => Boolean(project))
+      : records.map((record, index) => mapProjectRecord(record, index));
+    if (projects.length === 0 && !this.usesLarkCliStorage()) {
       projects.push(buildDefaultWorkspace());
     }
     const defaultProjectId =
       projects.find((project) => project.code === 'headset-rd')?.id ??
-      projects[0].id;
+      projects[0]?.id ??
+      '';
     const value = { projects, defaultProjectId };
     this.projectCatalogCache = {
       expiresAt: Date.now() + 5_000,
@@ -146,16 +190,19 @@ export class ProjectGraphService {
     if (request.source !== 'shared-base' && request.source !== 'linked-base') {
       throw new BadRequestException('项目数据源无效');
     }
-    const base =
-      request.source === 'linked-base'
-        ? parseLinkedBase(request)
-        : DEFAULT_BASE;
-    if (request.source === 'linked-base') {
-      await Promise.all([
-        this.searchAllRecords(NODE_PLUGIN_ID, base, 1),
-        this.searchAllRecords(EDGE_PLUGIN_ID, base, 1),
-      ]);
+    if (this.usesLarkCliStorage()) {
+      return this.createIndependentProject({
+        ...request,
+        name,
+        source: 'linked-base',
+      });
     }
+    if (request.source === 'linked-base') {
+      throw new BadRequestException(
+        '当前运行时不支持动态绑定外部 Base，请创建共享 Base 项目空间。',
+      );
+    }
+    const base = DEFAULT_BASE;
     const code = `project-${Date.now()}`;
     const meta: ProjectWorkspaceMeta = {
       parentId: request.parentId || undefined,
@@ -188,6 +235,205 @@ export class ProjectGraphService {
     };
   }
 
+  async updateProjectName(
+    projectId: string,
+    request: UpdateProjectWorkspaceRequest,
+  ): Promise<ProjectWorkspace> {
+    const name = request.name?.trim();
+    if (!name) {
+      throw new BadRequestException('项目名称不能为空');
+    }
+    if (name.length > 100) {
+      throw new BadRequestException('项目名称不能超过 100 个字符');
+    }
+    const catalog = await this.listProjects(true);
+    const project = catalog.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new BadRequestException('项目不存在或已被移除');
+    }
+    if (
+      catalog.projects.some(
+        (item) =>
+          item.id !== project.id &&
+          item.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase(),
+      )
+    ) {
+      throw new BadRequestException('项目名称已存在');
+    }
+    if (project.name === name) {
+      return project;
+    }
+
+    try {
+      if (this.usesLarkCliStorage()) {
+        await this.larkCli!.renameBitable(project.base.baseToken, name);
+        try {
+          await this.larkCli!.updateRecord(
+            CATALOG_BASE_TOKEN,
+            CATALOG_TABLE_ID,
+            project.id,
+            { [CATALOG_FIELD.NAME]: name },
+          );
+        } catch (error: unknown) {
+          try {
+            await this.larkCli!.renameBitable(
+              project.base.baseToken,
+              project.name,
+            );
+          } catch (rollbackError: unknown) {
+            this.logger.error(
+              `Project title rollback failed: ${stringifyError(rollbackError)}`,
+            );
+          }
+          throw error;
+        }
+      } else {
+        await this.pluginUpdateRecord(PROJECT_PLUGIN_ID, project.id, {
+          [PROJECT_FIELD.NAME]: name,
+        });
+      }
+      this.projectCatalogCache = undefined;
+      return {
+        ...project,
+        name,
+        updatedAt: formatNowTime(),
+      };
+    } catch (error: unknown) {
+      this.logger.error(`Project rename failed: ${stringifyError(error)}`);
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      throw new BadRequestException(
+        `项目名称修改失败: ${stringifyError(error)}`,
+      );
+    }
+  }
+
+  private async createIndependentProject(
+    request: CreateProjectWorkspaceRequest,
+  ): Promise<ProjectWorkspace> {
+    const name = request.name.trim();
+    const code = buildProjectCode(name);
+    try {
+      const document = await this.larkCli!.createWikiBase(
+        PROJECT_WIKI_PARENT_NODE_TOKEN,
+        name,
+      );
+      const existingTables = await this.larkCli!.listTables(document.baseToken);
+      if (existingTables[0]) {
+        await this.larkCli!.renameTable(
+          document.baseToken,
+          existingTables[0].id,
+          '项目概览',
+        );
+      }
+      const nodeTable = await this.larkCli!.createTable(
+        document.baseToken,
+        '项目节点',
+        buildIndependentNodeFields(),
+      );
+      const edgeTable = await this.larkCli!.createTable(
+        document.baseToken,
+        '项目连接关系',
+        buildIndependentEdgeFields(nodeTable.id),
+      );
+      const boardView = await this.larkCli!.createView(
+        document.baseToken,
+        nodeTable.id,
+        PROJECT_BOARD_VIEW_NAME,
+        'kanban',
+      );
+      await this.larkCli!.setViewGroup(
+        document.baseToken,
+        nodeTable.id,
+        boardView.id,
+        NODE_FIELD.TASK_OWNER,
+      );
+      await this.larkCli!.setViewVisibleFields(
+        document.baseToken,
+        nodeTable.id,
+        boardView.id,
+        buildProjectBoardVisibleFields(),
+      );
+      const base: BaseLinkConfig = {
+        baseToken: document.baseToken,
+        nodeTableId: nodeTable.id,
+        edgeTableId: edgeTable.id,
+        url: document.url,
+      };
+      const recordId = await this.larkCli!.createRecord(
+        CATALOG_BASE_TOKEN,
+        CATALOG_TABLE_ID,
+        {
+          [CATALOG_FIELD.CODE]: code,
+          [CATALOG_FIELD.NAME]: name,
+          [CATALOG_FIELD.STATUS]: '规划',
+          [CATALOG_FIELD.DESCRIPTION]: request.description?.trim() ?? '',
+          [CATALOG_FIELD.PROGRESS]: 0,
+          [CATALOG_FIELD.DOCUMENT_URL]: document.url,
+          [CATALOG_FIELD.BASE_TOKEN]: document.baseToken,
+          [CATALOG_FIELD.WIKI_NODE_TOKEN]: document.nodeToken,
+          [CATALOG_FIELD.NODE_TABLE_ID]: nodeTable.id,
+          [CATALOG_FIELD.EDGE_TABLE_ID]: edgeTable.id,
+          [CATALOG_FIELD.SOURCE]: 'Web',
+        },
+      );
+      this.projectCatalogCache = undefined;
+      return {
+        id: recordId,
+        code,
+        name,
+        description: request.description?.trim() ?? '',
+        status: 'planned',
+        parentId: request.parentId || undefined,
+        sort: Date.now(),
+        source: 'linked-base',
+        base,
+        writable: true,
+        updatedAt: formatNowTime(),
+      };
+    } catch (error: unknown) {
+      this.logger.error(
+        `Independent project creation failed: ${stringifyError(error)}`,
+      );
+      throw new BadRequestException(
+        `独立项目文档创建失败: ${stringifyError(error)}`,
+      );
+    }
+  }
+
+  async deleteProject(
+    projectId: string,
+  ): Promise<DeleteProjectWorkspaceResponse> {
+    const project = await this.resolveProject(projectId);
+    if (
+      project.id === DEFAULT_PROJECT_RECORD_ID ||
+      project.code === 'headset-rd'
+    ) {
+      throw new BadRequestException('默认项目不能删除');
+    }
+    if (project.source !== 'shared-base') {
+      throw new BadRequestException('外部 Base 项目不能从当前应用删除');
+    }
+    const [nodeRecords, edgeRecords] = await Promise.all([
+      this.searchAllRecords(NODE_PLUGIN_ID, project.base),
+      this.searchAllRecords(EDGE_PLUGIN_ID, project.base),
+    ]);
+    const hasProjectData =
+      nodeRecords.some((record) =>
+        recordLinksToProject(record, NODE_FIELD.PROJECT, project.id),
+      ) ||
+      edgeRecords.some((record) =>
+        recordLinksToProject(record, EDGE_FIELD.PROJECT, project.id),
+      );
+    if (hasProjectData) {
+      throw new BadRequestException('项目仍有节点或连线，不能直接删除');
+    }
+    await this.pluginDeleteRecord(PROJECT_PLUGIN_ID, project.id);
+    this.projectCatalogCache = undefined;
+    return { deletedProjectId: project.id, savedAt: formatNowTime() };
+  }
+
   async getGraph(projectId?: string): Promise<ProjectGraphResponse> {
     try {
       const project = await this.resolveProject(projectId);
@@ -195,8 +441,7 @@ export class ProjectGraphService {
     } catch (error: unknown) {
       if (
         error instanceof ForbiddenException ||
-        (error instanceof BadRequestException &&
-          error.message === '项目不存在或已被移除')
+        error instanceof BadRequestException
       ) {
         throw error;
       }
@@ -225,7 +470,7 @@ export class ProjectGraphService {
     await this.pluginUpdateRecord(
       NODE_PLUGIN_ID,
       node.id,
-      toNodeFields(patch),
+      this.usesLarkCliStorage() ? toCliNodeFields(patch) : toNodeFields(patch),
       project.base,
     );
     return this.getGraph(project.id);
@@ -241,7 +486,9 @@ export class ProjectGraphService {
     const project = await this.resolveProject(projectId);
     const createdNodeId = await this.pluginAddRecord(
       NODE_PLUGIN_ID,
-      toNewNodeFields(node, project),
+      this.usesLarkCliStorage()
+        ? toCliNewNodeFields(node)
+        : toNewNodeFields(node, project),
       project.base,
     );
     const parentId = node.linkedIds?.[0];
@@ -256,7 +503,9 @@ export class ProjectGraphService {
       };
       const createdEdgeId = await this.pluginAddRecord(
         EDGE_PLUGIN_ID,
-        toNewEdgeFields(edgeInput, project),
+        this.usesLarkCliStorage()
+          ? toCliNewEdgeFields(edgeInput)
+          : toNewEdgeFields(edgeInput, project),
         project.base,
       );
       createdEdge = { id: createdEdgeId, ...edgeInput };
@@ -288,6 +537,25 @@ export class ProjectGraphService {
       }
       recordId = node.id;
     }
+    const edgeRecords = await this.searchAllRecords(
+      EDGE_PLUGIN_ID,
+      project.base,
+    );
+    const recordIdSet = new Set([recordId]);
+    const incidentEdges = edgeRecords.filter(
+      (edgeRecord) =>
+        extractLinkIds(edgeRecord.record[EDGE_FIELD.SOURCE], recordIdSet)
+          .length > 0 ||
+        extractLinkIds(edgeRecord.record[EDGE_FIELD.TARGET], recordIdSet)
+          .length > 0,
+    );
+    for (const edgeRecord of incidentEdges) {
+      await this.pluginDeleteRecord(
+        EDGE_PLUGIN_ID,
+        edgeRecord.id,
+        project.base,
+      );
+    }
     await this.pluginDeleteRecord(NODE_PLUGIN_ID, recordId, project.base);
     return { deletedNodeId: nodeId, savedAt: formatNowTime() };
   }
@@ -302,7 +570,9 @@ export class ProjectGraphService {
     const project = await this.resolveProject(projectId);
     await this.pluginAddRecord(
       EDGE_PLUGIN_ID,
-      toNewEdgeFields(edge, project),
+      this.usesLarkCliStorage()
+        ? toCliNewEdgeFields(edge)
+        : toNewEdgeFields(edge, project),
       project.base,
     );
     return this.getGraph(project.id);
@@ -353,6 +623,12 @@ export class ProjectGraphService {
     base?: BaseLinkConfig,
     maxRecords?: number,
   ): Promise<PluginRecord[]> {
+    if (this.usesLarkCliStorage() && base) {
+      const tableId =
+        pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
+      const records = await this.larkCli!.listRecords(base.baseToken, tableId);
+      return maxRecords ? records.slice(0, maxRecords) : records;
+    }
     const allRecords: PluginRecord[] = [];
     let pageToken: string | undefined;
     do {
@@ -385,6 +661,11 @@ export class ProjectGraphService {
     record: Record<string, unknown>,
     base?: BaseLinkConfig,
   ): Promise<string> {
+    if (this.usesLarkCliStorage() && base) {
+      const tableId =
+        pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
+      return this.larkCli!.createRecord(base.baseToken, tableId, record);
+    }
     const result = await this.callPlugin<{
       records: Array<{ id: string }>;
     }>(
@@ -404,6 +685,17 @@ export class ProjectGraphService {
     record: Record<string, unknown>,
     base?: BaseLinkConfig,
   ): Promise<void> {
+    if (this.usesLarkCliStorage() && base) {
+      const tableId =
+        pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
+      await this.larkCli!.updateRecord(
+        base.baseToken,
+        tableId,
+        recordId,
+        record,
+      );
+      return;
+    }
     await this.callPlugin(
       pluginId,
       'batchUpdateRecords',
@@ -420,6 +712,12 @@ export class ProjectGraphService {
     recordId: string,
     base?: BaseLinkConfig,
   ): Promise<void> {
+    if (this.usesLarkCliStorage() && base) {
+      const tableId =
+        pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
+      await this.larkCli!.deleteRecord(base.baseToken, tableId, recordId);
+      return;
+    }
     await this.callPlugin(
       pluginId,
       'deleteRecords',
@@ -454,7 +752,13 @@ export class ProjectGraphService {
     } catch (error: unknown) {
       const msg = stringifyError(error);
       this.logger.error(
-        `Plugin call failed: ${pluginId}.${actionKey} - ${msg}`,
+        JSON.stringify({
+          pluginInstanceId: pluginId,
+          actionKey,
+          outputMode: 'unary',
+          inputKeys: Object.keys(input),
+          error: msg,
+        }),
       );
       const normalizedMessage = msg.toLowerCase();
       if (
@@ -470,6 +774,10 @@ export class ProjectGraphService {
       }
       throw new BadRequestException(`Base 操作失败: ${msg}`);
     }
+  }
+
+  private usesLarkCliStorage(): boolean {
+    return Boolean(this.larkCli?.isEnabled());
   }
 
   // --- Graph assembly ---
@@ -491,15 +799,20 @@ export class ProjectGraphService {
       this.searchAllRecords(NODE_PLUGIN_ID, project.base),
       this.searchAllRecords(EDGE_PLUGIN_ID, project.base),
     ]);
+    const meaningfulNodeRecords = nodeRecords.filter(
+      (record) =>
+        Boolean(extractText(record.record[NODE_FIELD.NAME]).trim()) ||
+        Boolean(extractText(record.record[NODE_FIELD.NODE_ID]).trim()),
+    );
     const scopedNodeRecords =
       project.source === 'shared-base'
-        ? nodeRecords.filter((record) =>
+        ? meaningfulNodeRecords.filter((record) =>
             extractLinkIds(
               record.record[NODE_FIELD.PROJECT],
               new Set([project.id]),
             ).includes(project.id),
           )
-        : nodeRecords;
+        : meaningfulNodeRecords;
     const nodeIds = new Set<string>(scopedNodeRecords.map((r) => r.id));
     const mappedNodes = scopedNodeRecords.map((r) =>
       this.mapGraphNodeRecordToNode(r.record, r.id, nodeIds),
@@ -554,6 +867,11 @@ export class ProjectGraphService {
     const groupValue = extractText(record[NODE_FIELD.GROUP]);
     const typeValue = extractText(record[NODE_FIELD.TYPE]);
     const laneValue = toProjectLane(typeValue, groupValue);
+    const userOwners = this.extractOwners(record[NODE_FIELD.OWNER]);
+    const taskOwners = extractNamedOwners(record[NODE_FIELD.TASK_OWNER]);
+    const legacyUserOwners = this.extractOwners(
+      record[NODE_FIELD.LEGACY_OWNER],
+    );
     return {
       id: recordId,
       title: extractText(record[NODE_FIELD.NAME]) || '未命名节点',
@@ -561,9 +879,13 @@ export class ProjectGraphService {
       lane: laneValue,
       kind: toProjectNodeKind(typeValue, laneValue),
       status: toProjectStatus(extractText(record[NODE_FIELD.STATUS])),
-      owners: this.extractOwners(record[NODE_FIELD.OWNER]).length
-        ? this.extractOwners(record[NODE_FIELD.OWNER])
-        : this.extractOwners(record[NODE_FIELD.LEGACY_OWNER]),
+      owners: userOwners.length
+        ? userOwners
+        : taskOwners.length
+          ? taskOwners
+          : legacyUserOwners.length
+            ? legacyUserOwners
+            : extractNamedOwners(record[NODE_FIELD.LEGACY_OWNER]),
       progress: normalizeProgress(extractNumber(record[NODE_FIELD.PROGRESS])),
       version: extractText(record[NODE_FIELD.VERSION]),
       date: formatDateValue(record[NODE_FIELD.DATE]),
@@ -729,6 +1051,65 @@ function mapProjectRecord(
   };
 }
 
+function mapCatalogRecord(
+  record: LarkCliRecord,
+  index: number,
+): ProjectWorkspace | null {
+  const name = extractText(record.record[CATALOG_FIELD.NAME]).trim();
+  const baseToken = extractText(record.record[CATALOG_FIELD.BASE_TOKEN]).trim();
+  const nodeTableId = extractText(
+    record.record[CATALOG_FIELD.NODE_TABLE_ID],
+  ).trim();
+  const edgeTableId = extractText(
+    record.record[CATALOG_FIELD.EDGE_TABLE_ID],
+  ).trim();
+  if (
+    !name ||
+    !baseToken ||
+    !nodeTableId.startsWith('tbl') ||
+    !edgeTableId.startsWith('tbl')
+  ) {
+    return null;
+  }
+  const createdAt = extractText(record.record[CATALOG_FIELD.CREATED_AT]);
+  const updatedAt = extractText(record.record[CATALOG_FIELD.UPDATED_AT]);
+  const createdTimestamp = Date.parse(createdAt);
+  return {
+    id: record.id,
+    code:
+      extractText(record.record[CATALOG_FIELD.CODE]).trim() ||
+      `project-${record.id}`,
+    name,
+    description: extractText(record.record[CATALOG_FIELD.DESCRIPTION]).trim(),
+    status: toProjectWorkspaceStatus(
+      extractText(record.record[CATALOG_FIELD.STATUS]),
+    ),
+    sort: Number.isFinite(createdTimestamp) ? createdTimestamp : index,
+    source: 'linked-base',
+    base: {
+      baseToken,
+      nodeTableId,
+      edgeTableId,
+      url:
+        extractUrl(record.record[CATALOG_FIELD.DOCUMENT_URL]) ||
+        `https://vcnqhq28cfdm.feishu.cn/base/${baseToken}`,
+    },
+    writable: true,
+    updatedAt: updatedAt || undefined,
+  };
+}
+
+function recordLinksToProject(
+  record: PluginRecord,
+  fieldName: string,
+  projectId: string,
+): boolean {
+  return extractLinkIds(
+    record.record[fieldName],
+    new Set([projectId]),
+  ).includes(projectId);
+}
+
 function buildDefaultWorkspace(): ProjectWorkspace {
   return {
     id: DEFAULT_PROJECT_RECORD_ID,
@@ -797,32 +1178,145 @@ function decodeProjectDescription(value: string): {
   return { description };
 }
 
-function parseLinkedBase(
-  request: CreateProjectWorkspaceRequest,
-): BaseLinkConfig {
-  const rawUrl = request.baseUrl?.trim() ?? '';
-  const tokenMatch = /\/base\/([^/?#]+)/u.exec(rawUrl);
-  if (!tokenMatch) {
-    throw new BadRequestException('请粘贴飞书多维表格的 Base 链接');
-  }
-  let url: URL;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    throw new BadRequestException('飞书 Base 链接格式无效');
-  }
-  const nodeTableId =
-    request.nodeTableId?.trim() || url.searchParams.get('table');
-  const edgeTableId = request.edgeTableId?.trim();
-  if (!nodeTableId?.startsWith('tbl') || !edgeTableId?.startsWith('tbl')) {
-    throw new BadRequestException('需要有效的节点表 ID 和关系表 ID');
-  }
-  return {
-    baseToken: tokenMatch[1],
-    nodeTableId,
-    edgeTableId,
-    url: rawUrl,
-  };
+function buildProjectCode(name: string): string {
+  const normalized = name
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/gu, '-')
+    .replace(/^-+|-+$/gu, '')
+    .slice(0, 40);
+  return `${normalized || 'project'}-${Date.now().toString(36)}`;
+}
+
+function buildIndependentNodeFields(): Array<Record<string, unknown>> {
+  return [
+    { name: NODE_FIELD.NAME, type: 'text' },
+    { name: NODE_FIELD.NODE_ID, type: 'text' },
+    { name: NODE_FIELD.SUBTITLE, type: 'text' },
+    {
+      name: NODE_FIELD.GROUP,
+      type: 'select',
+      multiple: false,
+      options: [
+        { name: '硬件主干', hue: 'Orange', lightness: 'Light' },
+        { name: '软件算法', hue: 'Blue', lightness: 'Light' },
+        { name: '联调测试', hue: 'Green', lightness: 'Light' },
+      ],
+    },
+    {
+      name: NODE_FIELD.TYPE,
+      type: 'select',
+      multiple: false,
+      options: [
+        '项目',
+        '问题',
+        '硬件',
+        '软件',
+        '算法',
+        '联调',
+        '测试',
+        '风险',
+        '发布',
+      ].map((name) => ({ name })),
+    },
+    {
+      name: NODE_FIELD.STATUS,
+      type: 'select',
+      multiple: false,
+      options: [
+        { name: '规划', hue: 'Gray', lightness: 'Light' },
+        { name: '推进中', hue: 'Blue', lightness: 'Light' },
+        { name: '评审', hue: 'Purple', lightness: 'Light' },
+        { name: '测试', hue: 'Wathet', lightness: 'Light' },
+        { name: '阻塞', hue: 'Red', lightness: 'Light' },
+        { name: '通过', hue: 'Green', lightness: 'Light' },
+        { name: '发布', hue: 'Turquoise', lightness: 'Light' },
+        { name: '归档', hue: 'Gray', lightness: 'Standard' },
+      ],
+    },
+    { name: NODE_FIELD.LEGACY_OWNER, type: 'text' },
+    {
+      name: NODE_FIELD.TASK_OWNER,
+      type: 'select',
+      multiple: true,
+      options: [{ name: '待指定', hue: 'Gray', lightness: 'Light' }],
+    },
+    {
+      name: NODE_FIELD.PROGRESS,
+      type: 'number',
+      style: { type: 'progress', percentage: true, color: 'Blue' },
+    },
+    { name: NODE_FIELD.VERSION, type: 'text' },
+    {
+      name: NODE_FIELD.DATE,
+      type: 'datetime',
+      style: { format: 'yyyy-MM-dd' },
+    },
+    { name: NODE_FIELD.TAGS, type: 'text' },
+    { name: NODE_FIELD.SUMMARY, type: 'text' },
+    { name: NODE_FIELD.NEXT, type: 'text' },
+    { name: NODE_FIELD.RISKS, type: 'text' },
+    {
+      name: NODE_FIELD.IMAGE,
+      type: 'text',
+      style: { type: 'url' },
+    },
+    {
+      name: NODE_FIELD.SORT,
+      type: 'number',
+      style: { type: 'plain', precision: 0 },
+    },
+  ];
+}
+
+function buildProjectBoardVisibleFields(): string[] {
+  return [
+    NODE_FIELD.NAME,
+    NODE_FIELD.TASK_OWNER,
+    NODE_FIELD.STATUS,
+    NODE_FIELD.SUMMARY,
+    NODE_FIELD.PROGRESS,
+    NODE_FIELD.DATE,
+    NODE_FIELD.NEXT,
+    NODE_FIELD.RISKS,
+    NODE_FIELD.TYPE,
+    NODE_FIELD.VERSION,
+    NODE_FIELD.TAGS,
+  ];
+}
+
+function buildIndependentEdgeFields(
+  nodeTableId: string,
+): Array<Record<string, unknown>> {
+  return [
+    { name: EDGE_FIELD.NAME, type: 'text' },
+    { name: EDGE_FIELD.EDGE_ID, type: 'text' },
+    {
+      name: EDGE_FIELD.TYPE,
+      type: 'select',
+      multiple: false,
+      options: [{ name: '主树' }, { name: '跨节点' }],
+    },
+    { name: EDGE_FIELD.LABEL, type: 'text' },
+    { name: EDGE_FIELD.CRITICAL, type: 'checkbox' },
+    {
+      name: EDGE_FIELD.SORT,
+      type: 'number',
+      style: { type: 'plain', precision: 0 },
+    },
+    {
+      name: EDGE_FIELD.SOURCE,
+      type: 'link',
+      link_table: nodeTableId,
+      bidirectional: false,
+    },
+    {
+      name: EDGE_FIELD.TARGET,
+      type: 'link',
+      link_table: nodeTableId,
+      bidirectional: false,
+    },
+  ];
 }
 
 // --- Field builders ---
@@ -879,6 +1373,23 @@ function toNodeFields(
   return fields;
 }
 
+function toCliNodeFields(
+  patch: UpdateProjectGraphNodeRequest,
+): Record<string, unknown> {
+  const fields = toNodeFields({ ...patch, owners: undefined, date: undefined });
+  if (patch.owners !== undefined) {
+    const ownerNames = patch.owners
+      .map((owner) => owner.name.trim())
+      .filter(Boolean);
+    fields[NODE_FIELD.LEGACY_OWNER] = ownerNames.join(' / ');
+    fields[NODE_FIELD.TASK_OWNER] = ownerNames;
+  }
+  if (typeof patch.date === 'string') {
+    fields[NODE_FIELD.DATE] = toCliDateValue(patch.date);
+  }
+  return fields;
+}
+
 function toNewNodeFields(
   node: CreateProjectGraphNodeRequest,
   project: ProjectWorkspace,
@@ -907,6 +1418,33 @@ function toNewNodeFields(
     fields[NODE_FIELD.OWNER] = ownersToBaseFieldStatic(node.owners);
   }
   return fields;
+}
+
+function toCliNewNodeFields(
+  node: CreateProjectGraphNodeRequest,
+): Record<string, unknown> {
+  const ownerNames = (node.owners ?? [])
+    .map((owner) => owner.name.trim())
+    .filter(Boolean);
+  return {
+    [NODE_FIELD.NAME]: node.title,
+    [NODE_FIELD.NODE_ID]: `node-${Date.now()}`,
+    [NODE_FIELD.GROUP]: toBaseGroup(node.lane),
+    [NODE_FIELD.TYPE]: toBaseNodeType(node.kind, node.lane),
+    [NODE_FIELD.STATUS]: toBaseStatus(node.status),
+    [NODE_FIELD.LEGACY_OWNER]: ownerNames.join(' / '),
+    [NODE_FIELD.TASK_OWNER]: ownerNames,
+    [NODE_FIELD.PROGRESS]: normalizeProgress(node.progress ?? 0),
+    [NODE_FIELD.VERSION]: node.version ?? '',
+    [NODE_FIELD.DATE]: toCliDateValue(node.date),
+    [NODE_FIELD.SUBTITLE]: node.subtitle ?? '',
+    [NODE_FIELD.TAGS]: (node.tags ?? []).join('，'),
+    [NODE_FIELD.SUMMARY]: node.summary ?? '',
+    [NODE_FIELD.NEXT]: node.nextAction ?? '',
+    [NODE_FIELD.RISKS]: (node.risks ?? []).join('\n'),
+    [NODE_FIELD.IMAGE]: node.imageUrl ?? '',
+    [NODE_FIELD.SORT]: 0,
+  };
 }
 
 function toEdgeFields(
@@ -940,6 +1478,21 @@ function toNewEdgeFields(
     fields[EDGE_FIELD.PROJECT] = toLinkField(project.id);
   }
   return fields;
+}
+
+function toCliNewEdgeFields(
+  edge: CreateProjectGraphEdgeRequest,
+): Record<string, unknown> {
+  return {
+    [EDGE_FIELD.NAME]: `${edge.source}-${edge.target}`,
+    [EDGE_FIELD.EDGE_ID]: `edge-${Date.now()}`,
+    [EDGE_FIELD.TYPE]: edge.kind === 'tree' ? '主树' : '跨节点',
+    [EDGE_FIELD.LABEL]: edge.label || '关联',
+    [EDGE_FIELD.CRITICAL]: Boolean(edge.critical),
+    [EDGE_FIELD.SORT]: 0,
+    [EDGE_FIELD.SOURCE]: [{ id: edge.source }],
+    [EDGE_FIELD.TARGET]: [{ id: edge.target }],
+  };
 }
 
 function reconcileGraphRelationships(
@@ -1021,15 +1574,47 @@ function toDateTimestamp(value: string): number | null {
   return timestamp;
 }
 
+function toCliDateValue(value: string): string | null {
+  if (!value) return null;
+  toDateTimestamp(value);
+  return `${value} 00:00:00`;
+}
+
 // --- Value extractors ---
 
 function extractText(value: unknown): string {
   if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value.map(extractText).filter(Boolean).join('，');
+  }
   if (value && typeof value === 'object' && 'text' in value) {
     const textVal = (value as Record<string, unknown>).text;
-    return typeof textVal === 'string' ? textVal : '';
+    return extractText(textVal);
+  }
+  if (value && typeof value === 'object' && 'name' in value) {
+    return extractText((value as Record<string, unknown>).name);
+  }
+  if (value && typeof value === 'object' && 'value' in value) {
+    return extractText((value as Record<string, unknown>).value);
   }
   return '';
+}
+
+function extractNamedOwners(value: unknown): ProjectOwner[] {
+  const names = (Array.isArray(value) ? value : [value])
+    .flatMap((entry) => extractText(entry).split('/'))
+    .map((name) => name.trim())
+    .filter(Boolean);
+  return [...new Set(names)].map((name) => ({
+    apaasUserId: '',
+    name,
+  }));
+}
+
+function extractUrl(value: unknown): string {
+  const text = extractText(value).trim();
+  const markdownLink = /^\[[^\]]*\]\((https?:\/\/[^)]+)\)$/u.exec(text);
+  return markdownLink?.[1] ?? text;
 }
 
 function extractNumber(value: unknown): number {

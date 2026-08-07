@@ -3,6 +3,7 @@ import type {
   AuthNPaasService,
   CapabilityService,
 } from '@lark-apaas/fullstack-nestjs-core';
+import type { LarkCliBaseClient } from './lark-cli-base.client';
 import { ProjectGraphService } from './project-graph.service';
 
 const NODE_PLUGIN_ID = 'project_graph_node_crud_1';
@@ -16,6 +17,7 @@ function nodeRecord(
   ownerId: number | number[],
   group = '软件算法',
   type = '软件',
+  projectId = PROJECT_RECORD_ID,
 ) {
   return {
     id,
@@ -35,7 +37,7 @@ function nodeRecord(
       下一步: '',
       '风险/阻塞': '',
       图片URL: '',
-      所属项目: [{ id: PROJECT_RECORD_ID }],
+      所属项目: [{ id: projectId }],
       父节点: [],
     },
   };
@@ -54,6 +56,14 @@ function createService(options?: {
     nodeRecord('rec_node_1', 'stable-1', [101, 404]),
     nodeRecord('rec_node_2', 'stable-2', 202),
     nodeRecord('rec_node_3', 'stable-3', 303, '联调测试', '硬件'),
+    nodeRecord(
+      'rec_node_nonempty',
+      'stable-nonempty',
+      505,
+      '软件算法',
+      '软件',
+      'rec_project_nonempty',
+    ),
   ];
   const edges = [
     {
@@ -100,6 +110,24 @@ function createService(options?: {
         说明: '默认项目',
       },
     },
+    {
+      id: 'rec_project_empty',
+      record: {
+        项目编码: 'empty-project',
+        项目名称: '空项目',
+        状态: '待启动',
+        说明: '无节点和连线的测试项目',
+      },
+    },
+    {
+      id: 'rec_project_nonempty',
+      record: {
+        项目编码: 'nonempty-project',
+        项目名称: '非空项目',
+        状态: '推进中',
+        说明: '包含节点的测试项目',
+      },
+    },
   ];
   const capabilityService = {
     load: (pluginId: string) => ({
@@ -134,6 +162,89 @@ function createService(options?: {
   return {
     calls,
     service: new ProjectGraphService(capabilityService, authnService),
+  };
+}
+
+function createCliService() {
+  const listRecords = jest.fn(async (_baseToken: string, tableId: string) => {
+    if (tableId === 'tblrpWm6qG55Xssv') {
+      return [
+        {
+          id: 'rec_catalog_1',
+          record: {
+            项目编码: 'cli-project',
+            项目名称: 'CLI 独立项目',
+            状态: ['推进中'],
+            项目说明: '独立 Base',
+            项目文档:
+              '[https://example.feishu.cn/wiki/wiki_project](https://example.feishu.cn/wiki/wiki_project)',
+            'Base Token': 'base_cli',
+            'Wiki 节点 Token': 'wiki_project',
+            '节点表 ID': 'tbl_node_cli',
+            '连线表 ID': 'tbl_edge_cli',
+            创建时间: '2026-08-07 10:00:00',
+            更新时间: '2026-08-07 11:00:00',
+          },
+        },
+      ];
+    }
+    if (tableId === 'tbl_node_cli') {
+      return [
+        {
+          id: 'rec_cli_node',
+          record: {
+            节点名称: 'CLI 节点',
+            节点ID: 'cli-node',
+            分组: ['硬件主干'],
+            节点类型: ['硬件'],
+            状态: ['推进中'],
+            进度: 50,
+          },
+        },
+      ];
+    }
+    return [];
+  });
+  const larkCli = {
+    isEnabled: () => true,
+    listRecords,
+    createWikiBase: jest.fn(async () => ({
+      baseToken: 'base_created',
+      nodeToken: 'wiki_created',
+      url: 'https://example.feishu.cn/wiki/wiki_created',
+    })),
+    listTables: jest.fn(async () => [{ id: 'tbl_overview', name: 'Table' }]),
+    renameTable: jest.fn(async () => undefined),
+    renameBitable: jest.fn(async () => undefined),
+    createTable: jest.fn(async (_baseToken, name: string) => ({
+      id: name === '项目节点' ? 'tbl_created_node' : 'tbl_created_edge',
+      name,
+    })),
+    createView: jest.fn(async () => ({
+      id: 'vew_created_board',
+      name: '人员分工看板',
+      type: 'kanban',
+    })),
+    setViewGroup: jest.fn(async () => undefined),
+    setViewVisibleFields: jest.fn(async () => undefined),
+    createRecord: jest.fn(async () => 'rec_created_catalog'),
+    updateRecord: jest.fn(async () => undefined),
+    deleteRecord: jest.fn(async () => undefined),
+  } as unknown as LarkCliBaseClient;
+  const capabilityService = {
+    load: () => ({
+      call: async () => {
+        throw new Error('CLI mode must not call a fixed capability');
+      },
+    }),
+  } as unknown as CapabilityService;
+  const authnService = {
+    getBatchLarkUserIds: jest.fn(async () => []),
+  } as unknown as AuthNPaasService;
+  return {
+    larkCli,
+    listRecords,
+    service: new ProjectGraphService(capabilityService, authnService, larkCli),
   };
 }
 
@@ -205,6 +316,29 @@ describe('ProjectGraphService Base channel', () => {
     });
   });
 
+  it('bypasses the project catalog cache after returning from Feishu', async () => {
+    const { calls, service } = createService();
+
+    await service.listProjects();
+    await service.listProjects();
+    expect(
+      calls.filter(
+        (call) =>
+          call.pluginId === PROJECT_PLUGIN_ID &&
+          call.action === 'searchRecords',
+      ),
+    ).toHaveLength(1);
+
+    await service.listProjects(true);
+    expect(
+      calls.filter(
+        (call) =>
+          call.pluginId === PROJECT_PLUGIN_ID &&
+          call.action === 'searchRecords',
+      ),
+    ).toHaveLength(2);
+  });
+
   it('creates a project registry record in the shared Base', async () => {
     const { calls, service } = createService();
 
@@ -239,45 +373,91 @@ describe('ProjectGraphService Base channel', () => {
     });
   });
 
-  it('validates and registers a linked Base with runtime table bindings', async () => {
+  it('updates a shared project name in the project catalog', async () => {
     const { calls, service } = createService();
 
-    const project = await service.createProject({
-      name: '独立项目',
-      source: 'linked-base',
-      baseUrl: 'https://example.feishu.cn/base/BASE123?table=tblNode123',
-      edgeTableId: 'tblEdge123',
+    const project = await service.updateProjectName('rec_project_empty', {
+      name: '空项目二期',
     });
 
-    expect(project.base).toMatchObject({
-      baseToken: 'BASE123',
-      nodeTableId: 'tblNode123',
-      edgeTableId: 'tblEdge123',
+    expect(project.name).toBe('空项目二期');
+    expect(
+      calls.find(
+        (call) =>
+          call.pluginId === PROJECT_PLUGIN_ID &&
+          call.action === 'batchUpdateRecords',
+      )?.input,
+    ).toEqual({
+      records: [
+        {
+          id: 'rec_project_empty',
+          record: { 项目名称: '空项目二期' },
+        },
+      ],
     });
+  });
+
+  it('rejects an empty or duplicate project name before writing', async () => {
+    const { calls, service } = createService();
+
+    await expect(
+      service.updateProjectName('rec_project_empty', { name: '  ' }),
+    ).rejects.toThrow('项目名称不能为空');
+    await expect(
+      service.updateProjectName('rec_project_empty', { name: '非空项目' }),
+    ).rejects.toThrow('项目名称已存在');
+    expect(
+      calls.filter((call) => call.action === 'batchUpdateRecords'),
+    ).toHaveLength(0);
+  });
+
+  it('rejects linked Base creation instead of reading the wrong static tables', async () => {
+    const { calls, service } = createService();
+
+    await expect(
+      service.createProject({
+        name: '独立项目',
+        source: 'linked-base',
+        baseUrl: 'https://example.feishu.cn/base/BASE123?table=tblNode123',
+        edgeTableId: 'tblEdge123',
+      }),
+    ).rejects.toThrow(
+      '当前运行时不支持动态绑定外部 Base，请创建共享 Base 项目空间。',
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it('deletes an empty non-default project registry record', async () => {
+    const { calls, service } = createService();
+
+    const result = await service.deleteProject('rec_project_empty');
+
+    expect(result.deletedProjectId).toBe('rec_project_empty');
     expect(
       calls.find(
         (call) =>
-          call.pluginId === NODE_PLUGIN_ID && call.action === 'searchRecords',
+          call.pluginId === PROJECT_PLUGIN_ID &&
+          call.action === 'deleteRecords',
       )?.input,
-    ).toEqual(
-      expect.objectContaining({
-        baseToken: 'BASE123',
-        tableId: 'tblNode123',
-        pageSize: 1,
-      }),
+    ).toEqual({ recordIDs: ['rec_project_empty'] });
+  });
+
+  it('protects the default project from deletion', async () => {
+    const { calls, service } = createService();
+
+    await expect(service.deleteProject(PROJECT_RECORD_ID)).rejects.toThrow(
+      '默认项目不能删除',
     );
-    expect(
-      calls.find(
-        (call) =>
-          call.pluginId === EDGE_PLUGIN_ID && call.action === 'searchRecords',
-      )?.input,
-    ).toEqual(
-      expect.objectContaining({
-        baseToken: 'BASE123',
-        tableId: 'tblEdge123',
-        pageSize: 1,
-      }),
+    expect(calls.some((call) => call.action === 'deleteRecords')).toBe(false);
+  });
+
+  it('rejects deletion while a project still has graph data', async () => {
+    const { calls, service } = createService();
+
+    await expect(service.deleteProject('rec_project_nonempty')).rejects.toThrow(
+      '项目仍有节点或连线，不能直接删除',
     );
+    expect(calls.some((call) => call.action === 'deleteRecords')).toBe(false);
   });
 
   it('updates a displayed record ID with a real user field and epoch date', async () => {
@@ -426,7 +606,7 @@ describe('ProjectGraphService Base channel', () => {
     ).toBe(false);
   });
 
-  it('deletes a Base record ID without reading the whole node table', async () => {
+  it('deletes incident edges before deleting a Base node record', async () => {
     const { calls, service } = createService();
 
     const result = await service.deleteNode('rec_node_1');
@@ -439,6 +619,161 @@ describe('ProjectGraphService Base channel', () => {
         input: expect.objectContaining({ recordIDs: ['rec_node_1'] }),
       },
     ]);
+    expect(
+      calls.filter(
+        (call) =>
+          call.pluginId === EDGE_PLUGIN_ID && call.action === 'deleteRecords',
+      ),
+    ).toHaveLength(2);
+  });
+
+  it('reads independent project metadata and select arrays through lark-cli', async () => {
+    const { service } = createCliService();
+
+    const catalog = await service.listProjects();
+    const graph = await service.getGraph('rec_catalog_1');
+
+    expect(catalog.projects[0]).toMatchObject({
+      id: 'rec_catalog_1',
+      name: 'CLI 独立项目',
+      source: 'linked-base',
+      base: {
+        url: 'https://example.feishu.cn/wiki/wiki_project',
+      },
+    });
+    expect(graph.nodes[0]).toMatchObject({
+      id: 'rec_cli_node',
+      title: 'CLI 节点',
+      lane: 'hardware',
+      kind: 'hardware',
+      status: 'active',
+      progress: 50,
+    });
+  });
+
+  it('creates and registers an independent wiki Base through lark-cli', async () => {
+    const { larkCli, service } = createCliService();
+
+    const project = await service.createProject({
+      name: '新独立项目',
+      description: '端到端项目',
+      source: 'linked-base',
+    });
+
+    expect(project).toMatchObject({
+      id: 'rec_created_catalog',
+      name: '新独立项目',
+      source: 'linked-base',
+      base: {
+        baseToken: 'base_created',
+        nodeTableId: 'tbl_created_node',
+        edgeTableId: 'tbl_created_edge',
+      },
+    });
+    expect(larkCli.createWikiBase).toHaveBeenCalledWith(
+      'EVYowE8rSi4ZWqkCIu8cc2EQn8d',
+      '新独立项目',
+    );
+    expect(larkCli.createTable).toHaveBeenNthCalledWith(
+      1,
+      'base_created',
+      '项目节点',
+      expect.any(Array),
+    );
+    expect(larkCli.createTable).toHaveBeenNthCalledWith(
+      2,
+      'base_created',
+      '项目连接关系',
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: '来源节点',
+          link_table: 'tbl_created_node',
+        }),
+      ]),
+    );
+    expect(larkCli.createRecord).toHaveBeenCalledWith(
+      'I2hLbxQOsaZYcQsPuSOc3UMWnSe',
+      'tblrpWm6qG55Xssv',
+      expect.objectContaining({
+        项目名称: '新独立项目',
+        'Base Token': 'base_created',
+        '节点表 ID': 'tbl_created_node',
+        '连线表 ID': 'tbl_created_edge',
+      }),
+    );
+    expect(larkCli.createView).toHaveBeenCalledWith(
+      'base_created',
+      'tbl_created_node',
+      '人员分工看板',
+      'kanban',
+    );
+    expect(larkCli.setViewGroup).toHaveBeenCalledWith(
+      'base_created',
+      'tbl_created_node',
+      'vew_created_board',
+      '任务负责人',
+    );
+    expect(larkCli.setViewVisibleFields).toHaveBeenCalledWith(
+      'base_created',
+      'tbl_created_node',
+      'vew_created_board',
+      [
+        '节点名称',
+        '任务负责人',
+        '状态',
+        '工作内容',
+        '进度',
+        '日期',
+        '下一步',
+        '风险/阻塞',
+        '节点类型',
+        '版本/分支',
+        '标签',
+      ],
+    );
+  });
+
+  it('renames both the independent Base and its catalog record through lark-cli', async () => {
+    const { larkCli, service } = createCliService();
+
+    const project = await service.updateProjectName('rec_catalog_1', {
+      name: 'CLI 独立项目二期',
+    });
+
+    expect(project.name).toBe('CLI 独立项目二期');
+    expect(larkCli.renameBitable).toHaveBeenCalledWith(
+      'base_cli',
+      'CLI 独立项目二期',
+    );
+    expect(larkCli.updateRecord).toHaveBeenCalledWith(
+      'I2hLbxQOsaZYcQsPuSOc3UMWnSe',
+      'tblrpWm6qG55Xssv',
+      'rec_catalog_1',
+      { 项目名称: 'CLI 独立项目二期' },
+    );
+  });
+
+  it('rolls the Base title back when the catalog rename fails', async () => {
+    const { larkCli, service } = createCliService();
+    (larkCli.updateRecord as jest.Mock).mockRejectedValueOnce(
+      new Error('catalog write failed'),
+    );
+
+    await expect(
+      service.updateProjectName('rec_catalog_1', {
+        name: '不会保留的名称',
+      }),
+    ).rejects.toThrow('项目名称修改失败: catalog write failed');
+    expect(larkCli.renameBitable).toHaveBeenNthCalledWith(
+      1,
+      'base_cli',
+      '不会保留的名称',
+    );
+    expect(larkCli.renameBitable).toHaveBeenNthCalledWith(
+      2,
+      'base_cli',
+      'CLI 独立项目',
+    );
   });
 
   it('resolves a stable node ID only when it is not a Base record ID', async () => {
@@ -510,5 +845,16 @@ describe('ProjectGraphService Base channel', () => {
         ForbiddenException,
       );
     }
+  });
+
+  it('does not hide Base routing errors behind static fallback data', async () => {
+    const { service } = createService({
+      denyMessage:
+        'xdomain gateway routing failed (likely invalid app_token / table_id)',
+    });
+
+    await expect(service.getGraph()).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 });

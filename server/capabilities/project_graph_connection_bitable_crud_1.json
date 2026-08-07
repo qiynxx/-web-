@@ -5,17 +5,10 @@
   "name": "项目图谱连线表多维表格CRUD操作",
   "description": "用于项目图谱连线表的数据读写操作，支持连接名称、连接ID、连接类型等字段的增删改查。",
   "icon": "",
-  "paramsSchema": {
-    "type": "object",
-    "properties": {
-      "baseToken": { "type": "string" },
-      "tableId": { "type": "string" }
-    },
-    "required": ["baseToken", "tableId"]
-  },
+  "paramsSchema": {},
   "formValue": {
-    "appToken": "{{input.baseToken}}",
-    "tableID": "{{input.tableId}}",
+    "appToken": "WC3cb3acOaminMsXKbTcwPKdnMg",
+    "tableID": "tblFSCyy1hjLEFO5",
     "fields": [
       {
         "type": 1,

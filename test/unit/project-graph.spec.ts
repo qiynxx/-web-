@@ -4,7 +4,10 @@ import {
   buildStaticMetrics,
   buildStaticNodes,
 } from '../../server/modules/project-graph/project-graph-static';
-import { findAddedNode } from '../../client/src/pages/project-graph/project-graph-model';
+import {
+  buildBaseTableUrl,
+  findAddedNode,
+} from '../../client/src/pages/project-graph/project-graph-model';
 
 describe('project-graph-static', () => {
   describe('buildStaticNodes', () => {
@@ -87,6 +90,23 @@ describe('project-graph-static', () => {
       expect(
         findAddedNode(previousNodes, [...previousNodes, createdNode]),
       ).toEqual(createdNode);
+    });
+  });
+
+  describe('buildBaseTableUrl', () => {
+    it('opens the requested Base table when the stored URL has no table', () => {
+      expect(
+        buildBaseTableUrl('https://my.feishu.cn/base/base_token', 'tbl_nodes'),
+      ).toBe('https://my.feishu.cn/base/base_token?table=tbl_nodes');
+    });
+
+    it('replaces a stale table while preserving the selected view', () => {
+      expect(
+        buildBaseTableUrl(
+          'https://my.feishu.cn/base/base_token?table=tbl_old&view=vew_1',
+          'tbl_edges',
+        ),
+      ).toBe('https://my.feishu.cn/base/base_token?table=tbl_edges&view=vew_1');
     });
   });
 });

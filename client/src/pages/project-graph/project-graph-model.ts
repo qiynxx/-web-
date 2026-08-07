@@ -520,6 +520,20 @@ export function writeActiveProjectId(projectId: string): void {
   window.localStorage.setItem(ACTIVE_PROJECT_KEY, projectId);
 }
 
+export function buildBaseTableUrl(
+  baseUrl: string | undefined,
+  tableId: string | undefined,
+): string {
+  if (!baseUrl || !tableId) return baseUrl ?? '#';
+  try {
+    const url = new URL(baseUrl);
+    url.searchParams.set('table', tableId);
+    return url.toString();
+  } catch {
+    return baseUrl;
+  }
+}
+
 export function createProjectLibraryItem(
   name: string,
   graph: ProjectGraphResponse,

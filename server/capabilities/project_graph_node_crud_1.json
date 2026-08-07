@@ -5,17 +5,10 @@
   "name": "项目图谱节点表CRUD操作",
   "description": "用于项目图谱节点表的数据读写操作，支持节点的创建、查询、更新、删除等功能",
   "icon": "",
-  "paramsSchema": {
-    "type": "object",
-    "properties": {
-      "baseToken": { "type": "string" },
-      "tableId": { "type": "string" }
-    },
-    "required": ["baseToken", "tableId"]
-  },
+  "paramsSchema": {},
   "formValue": {
-    "appToken": "{{input.baseToken}}",
-    "tableID": "{{input.tableId}}",
+    "appToken": "WC3cb3acOaminMsXKbTcwPKdnMg",
+    "tableID": "tblVIjVsxIbuk1QQ",
     "fields": [
       {
         "readable": true,

@@ -14,12 +14,14 @@ import type {
   CreateProjectGraphEdgeRequest,
   CreateProjectGraphNodeRequest,
   CreateProjectWorkspaceRequest,
+  DeleteProjectWorkspaceResponse,
   DeleteProjectGraphNodeResponse,
   ProjectGraphResponse,
   ProjectWorkspace,
   ProjectWorkspaceListResponse,
   UpdateProjectGraphEdgeRequest,
   UpdateProjectGraphNodeRequest,
+  UpdateProjectWorkspaceRequest,
 } from '@shared/api.interface';
 import { ProjectGraphService } from './project-graph.service';
 
@@ -29,8 +31,10 @@ export class ProjectGraphController {
 
   @NeedLogin()
   @Get('projects')
-  async listProjects(): Promise<ProjectWorkspaceListResponse> {
-    return this.projectGraphService.listProjects();
+  async listProjects(
+    @Query('refresh') refresh?: string,
+  ): Promise<ProjectWorkspaceListResponse> {
+    return this.projectGraphService.listProjects(refresh === 'true');
   }
 
   @NeedLogin()
@@ -39,6 +43,23 @@ export class ProjectGraphController {
     @Body() request: CreateProjectWorkspaceRequest,
   ): Promise<ProjectWorkspace> {
     return this.projectGraphService.createProject(request);
+  }
+
+  @NeedLogin()
+  @Patch('projects/:projectId')
+  async updateProject(
+    @Param('projectId') projectId: string,
+    @Body() request: UpdateProjectWorkspaceRequest,
+  ): Promise<ProjectWorkspace> {
+    return this.projectGraphService.updateProjectName(projectId, request);
+  }
+
+  @NeedLogin()
+  @Delete('projects/:projectId')
+  async deleteProject(
+    @Param('projectId') projectId: string,
+  ): Promise<DeleteProjectWorkspaceResponse> {
+    return this.projectGraphService.deleteProject(projectId);
   }
 
   @NeedLogin()

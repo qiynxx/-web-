@@ -9,7 +9,7 @@
     "customToaster": true
   },
   "scripts": {
-    "dev": "concurrently -n \"server,client\" -c \"blue,green\" \"npm run dev:server\" \"npm run dev:client\"",
+    "dev": "DOTENV_CONFIG_PATH=.env.local node -r dotenv/config node_modules/concurrently/dist/bin/concurrently.js -n \"server,client\" -c \"blue,green\" \"npm run dev:server\" \"npm run dev:client\"",
     "dev:server": "NODE_ENV=development nest start --watch",
     "dev:client": "NODE_ENV=development vite --config vite.config.ts",
     "gen:db-schema": "npx -y @lark-apaas/db-schema-sync@latest --output server/database/schema.ts --export-custom-types",
