@@ -9,8 +9,10 @@ import {
 } from '@nestjs/common';
 import { NeedLogin } from '@lark-apaas/fullstack-nestjs-core';
 import type {
+  CreateProjectGraphNodeResponse,
   CreateProjectGraphEdgeRequest,
   CreateProjectGraphNodeRequest,
+  DeleteProjectGraphNodeResponse,
   ProjectGraphResponse,
   UpdateProjectGraphEdgeRequest,
   UpdateProjectGraphNodeRequest,
@@ -40,7 +42,7 @@ export class ProjectGraphController {
   @Post('nodes')
   async createNode(
     @Body() node: CreateProjectGraphNodeRequest,
-  ): Promise<ProjectGraphResponse> {
+  ): Promise<CreateProjectGraphNodeResponse> {
     return this.projectGraphService.createNode(node);
   }
 
@@ -48,7 +50,7 @@ export class ProjectGraphController {
   @Delete('nodes/:nodeId')
   async deleteNode(
     @Param('nodeId') nodeId: string,
-  ): Promise<ProjectGraphResponse> {
+  ): Promise<DeleteProjectGraphNodeResponse> {
     return this.projectGraphService.deleteNode(nodeId);
   }
 

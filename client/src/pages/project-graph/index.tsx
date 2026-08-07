@@ -38,6 +38,7 @@ import type {
   ProjectLane,
   ProjectMetric,
   ProjectNodeStatus,
+  CreateProjectGraphNodeResponse,
   CreateProjectGraphEdgeRequest,
   CreateProjectGraphNodeRequest,
   UpdateProjectGraphNodeRequest,
@@ -52,7 +53,6 @@ import {
   createEdge,
   DEFAULT_PROJECT_ID,
   filterNodes,
-  findAddedNode,
   LANE_LABELS,
   laneOptions,
   layoutGraph,
@@ -137,42 +137,6 @@ function getRequestErrorMessage(error: unknown): string {
   );
 }
 
-function preserveCreatedNodeRelationship(
-  graph: ProjectGraphResponse,
-  createdNodeId: string,
-  parentId: string,
-  optimisticEdge: ProjectGraphEdge,
-): ProjectGraphResponse {
-  const nodes: ProjectGraphNode[] = graph.nodes.map(
-    (node: ProjectGraphNode) =>
-      node.id === createdNodeId && !node.linkedIds.includes(parentId)
-        ? { ...node, linkedIds: [parentId] }
-        : node,
-  );
-  const hasRelationship: boolean = graph.edges.some(
-    (edge: ProjectGraphEdge) =>
-      edge.source === parentId && edge.target === createdNodeId,
-  );
-  const edges: ProjectGraphEdge[] = hasRelationship
-    ? graph.edges
-    : [
-        ...graph.edges,
-        {
-          ...optimisticEdge,
-          id: `pending-${parentId}-${createdNodeId}`,
-          source: parentId,
-          target: createdNodeId,
-          kind: 'tree',
-        },
-      ];
-  return {
-    ...graph,
-    nodes,
-    edges,
-    metrics: buildUiMetrics(nodes),
-  };
-}
-
 function ProjectGraphPage() {
   const [graph, setGraph] = useState<ProjectGraphResponse | null>(null);
   const [projectLibrary, setProjectLibrary] = useState<ProjectLibraryItem[]>(
@@ -194,6 +158,7 @@ function ProjectGraphPage() {
   const [creatingNode, setCreatingNode] = useState<boolean>(false);
   const baseSyncTimersRef = useRef<Record<string, number>>({});
   const creatingNodeRef = useRef<boolean>(false);
+  const deletingNodeRef = useRef<boolean>(false);
   const ownerIds = useMemo(
     () => [
       ...new Set(
@@ -424,33 +389,51 @@ function ProjectGraphPage() {
     }
     creatingNodeRef.current = true;
     setCreatingNode(true);
-    const previousNodes: ProjectGraphNode[] = previousGraph.nodes;
     try {
       const { id: _id, sourceRecordId: _sourceRecordId, ...payload } = node;
-      const nextGraph: ProjectGraphResponse =
+      const creation: CreateProjectGraphNodeResponse =
         await projectGraph.createProjectNode(
           payload as CreateProjectGraphNodeRequest,
         );
-      const createdNode: ProjectGraphNode | undefined = findAddedNode(
-        previousNodes,
-        nextGraph.nodes,
-      );
-      const parentId: string | undefined = node.linkedIds[0];
-      const graphWithImmediateRelationship: ProjectGraphResponse =
-        createdNode && parentId && optimisticEdge
-          ? preserveCreatedNodeRelationship(
-              nextGraph,
-              createdNode.id,
-              parentId,
-              optimisticEdge,
-            )
-          : nextGraph;
-      applyServerGraph(graphWithImmediateRelationship, createdNode?.id);
+      setGraph((currentGraph: ProjectGraphResponse | null) => {
+        if (!currentGraph) {
+          return currentGraph;
+        }
+        const nextNodes: ProjectGraphNode[] = currentGraph.nodes.map(
+          (currentNode: ProjectGraphNode) =>
+            currentNode.id === node.id ? creation.node : currentNode,
+        );
+        const nextEdges: ProjectGraphEdge[] = currentGraph.edges.map(
+          (edge: ProjectGraphEdge) => {
+            if (optimisticEdge && edge.id === optimisticEdge.id) {
+              return creation.edge ?? {
+                ...edge,
+                source:
+                  edge.source === node.id ? creation.node.id : edge.source,
+                target:
+                  edge.target === node.id ? creation.node.id : edge.target,
+              };
+            }
+            return {
+              ...edge,
+              source: edge.source === node.id ? creation.node.id : edge.source,
+              target: edge.target === node.id ? creation.node.id : edge.target,
+            };
+          },
+        );
+        return {
+          ...currentGraph,
+          nodes: nextNodes,
+          edges: nextEdges,
+          metrics: buildUiMetrics(nextNodes),
+          savedAt: creation.savedAt,
+        };
+      });
+      setSelectedId(creation.node.id);
       setSavedAt(
-        createdNode
-          ? `已新建“${createdNode.title}”并写回 Base ${formatSavedTime()}`
-          : `节点已写回 Base ${formatSavedTime()}`,
+        `已新建“${creation.node.title}”并写回 Base ${formatSavedTime()}`,
       );
+      setError('');
     } catch (requestError: unknown) {
       setGraph((currentGraph: ProjectGraphResponse | null) => {
         if (!currentGraph) {
@@ -479,13 +462,22 @@ function ProjectGraphPage() {
     }
   }
 
-  async function removeBaseNode(nodeId: string): Promise<void> {
+  async function removeBaseNode(
+    nodeId: string,
+    previousGraph: ProjectGraphResponse,
+    previousSelectedId: string,
+  ): Promise<void> {
     try {
-      const nextGraph: ProjectGraphResponse =
-        await projectGraph.deleteProjectNode(nodeId);
-      applyServerGraph(nextGraph);
-    } catch {
-      setError('Base 节点删除失败：请确认已登录且对该多维表格有编辑权限');
+      await projectGraph.deleteProjectNode(nodeId);
+      setSavedAt(`已删除节点并写回 Base ${formatSavedTime()}`);
+      setError('');
+    } catch (requestError: unknown) {
+      setGraph(previousGraph);
+      setSelectedId(previousSelectedId);
+      setError(`Base 节点删除失败：${getRequestErrorMessage(requestError)}`);
+      setSavedAt('删除失败，已恢复节点');
+    } finally {
+      deletingNodeRef.current = false;
     }
   }
 
@@ -611,7 +603,30 @@ function ProjectGraphPage() {
 
   function deleteNode(nodeId: string): void {
     if (graph && isDefaultBaseGraph(graph)) {
-      void removeBaseNode(nodeId);
+      if (deletingNodeRef.current || creatingNodeRef.current) {
+        return;
+      }
+      deletingNodeRef.current = true;
+      const previousGraph: ProjectGraphResponse = graph;
+      const previousSelectedId: string = selectedId;
+      const nextNodes: ProjectGraphNode[] = graph.nodes.filter(
+        (node: ProjectGraphNode) => node.id !== nodeId,
+      );
+      const nextEdges: ProjectGraphEdge[] = graph.edges.filter(
+        (edge: ProjectGraphEdge) =>
+          edge.source !== nodeId && edge.target !== nodeId,
+      );
+      setGraph({
+        ...graph,
+        nodes: nextNodes,
+        edges: nextEdges,
+        metrics: buildUiMetrics(nextNodes),
+      });
+      setSelectedId(nextNodes[0]?.id ?? '');
+      setSelectedEdgeId('');
+      setSavedAt('正在从 Base 删除…');
+      setError('');
+      void removeBaseNode(nodeId, previousGraph, previousSelectedId);
       return;
     }
 

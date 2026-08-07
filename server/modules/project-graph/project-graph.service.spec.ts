@@ -196,7 +196,7 @@ describe('ProjectGraphService Base channel', () => {
   it('creates every supported node field with Base-compatible values', async () => {
     const { calls, service } = createService();
 
-    await service.createNode({
+    const result = await service.createNode({
       title: '新节点',
       subtitle: '副标题',
       lane: 'software',
@@ -252,6 +252,46 @@ describe('ProjectGraphService Base channel', () => {
         },
       ],
     });
+    expect(result).toMatchObject({
+      node: {
+        id: 'rec_created',
+        title: '新节点',
+        linkedIds: ['rec_node_1'],
+      },
+      edge: {
+        source: 'rec_node_1',
+        target: 'rec_created',
+        kind: 'tree',
+      },
+    });
+    expect(calls.some((call) => call.action === 'searchRecords')).toBe(false);
+  });
+
+  it('deletes a Base record ID without reading the whole node table', async () => {
+    const { calls, service } = createService();
+
+    const result = await service.deleteNode('rec_node_1');
+
+    expect(result.deletedNodeId).toBe('rec_node_1');
+    expect(calls).toEqual([
+      {
+        pluginId: NODE_PLUGIN_ID,
+        action: 'deleteRecords',
+        input: { recordIDs: ['rec_node_1'] },
+      },
+    ]);
+  });
+
+  it('resolves a stable node ID only when it is not a Base record ID', async () => {
+    const { calls, service } = createService();
+
+    await service.deleteNode('stable-1');
+
+    expect(calls.map((call) => call.action)).toEqual([
+      'searchRecords',
+      'deleteRecords',
+    ]);
+    expect(calls[1].input).toEqual({ recordIDs: ['rec_node_1'] });
   });
 
   it('rejects invalid personnel and date values before calling Base', async () => {

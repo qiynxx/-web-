@@ -91,6 +91,17 @@ export interface ProjectGraphResponse {
   message?: string;
 }
 
+export interface CreateProjectGraphNodeResponse {
+  node: ProjectGraphNode;
+  edge?: ProjectGraphEdge;
+  savedAt: string;
+}
+
+export interface DeleteProjectGraphNodeResponse {
+  deletedNodeId: string;
+  savedAt: string;
+}
+
 export type UpdateProjectGraphNodeRequest = Partial<
   Pick<
     ProjectGraphNode,

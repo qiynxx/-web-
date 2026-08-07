@@ -1,8 +1,10 @@
 import { logger } from '@lark-apaas/client-toolkit/logger';
 import { axiosForBackend } from '@lark-apaas/client-toolkit/utils/getAxiosForBackend';
 import type {
+  CreateProjectGraphNodeResponse,
   CreateProjectGraphEdgeRequest,
   CreateProjectGraphNodeRequest,
+  DeleteProjectGraphNodeResponse,
   ProjectGraphResponse,
   UpdateProjectGraphEdgeRequest,
   UpdateProjectGraphNodeRequest,
@@ -40,14 +42,14 @@ export async function updateProjectNode(
 
 export async function createProjectNode(
   node: CreateProjectGraphNodeRequest,
-): Promise<ProjectGraphResponse> {
+): Promise<CreateProjectGraphNodeResponse> {
   try {
     const response = await axiosForBackend({
       url: '/api/project-graph/nodes',
       method: 'POST',
       data: node,
     });
-    return response.data as ProjectGraphResponse;
+    return response.data as CreateProjectGraphNodeResponse;
   } catch (error: unknown) {
     logger.error('创建项目节点失败', error);
     throw error;
@@ -56,13 +58,13 @@ export async function createProjectNode(
 
 export async function deleteProjectNode(
   nodeId: string,
-): Promise<ProjectGraphResponse> {
+): Promise<DeleteProjectGraphNodeResponse> {
   try {
     const response = await axiosForBackend({
       url: `/api/project-graph/nodes/${nodeId}`,
       method: 'DELETE',
     });
-    return response.data as ProjectGraphResponse;
+    return response.data as DeleteProjectGraphNodeResponse;
   } catch (error: unknown) {
     logger.error('删除项目节点失败', error);
     throw error;

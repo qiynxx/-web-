@@ -9,8 +9,10 @@ import {
   AuthNPaasService,
 } from '@lark-apaas/fullstack-nestjs-core';
 import type {
+  CreateProjectGraphNodeResponse,
   CreateProjectGraphEdgeRequest,
   CreateProjectGraphNodeRequest,
+  DeleteProjectGraphNodeResponse,
   ProjectGraphEdge,
   ProjectGraphNode,
   ProjectGraphResponse,
@@ -110,7 +112,7 @@ export class ProjectGraphService {
 
   async createNode(
     node: CreateProjectGraphNodeRequest,
-  ): Promise<ProjectGraphResponse> {
+  ): Promise<CreateProjectGraphNodeResponse> {
     if (!node.title) {
       throw new BadRequestException('title is required');
     }
@@ -119,31 +121,46 @@ export class ProjectGraphService {
       toNewNodeFields(node),
     );
     const parentId = node.linkedIds?.[0];
+    let createdEdge: ProjectGraphEdge | undefined;
     if (parentId) {
-      await this.pluginAddRecord(
+      const edgeInput: CreateProjectGraphEdgeRequest = {
+        source: parentId,
+        target: createdNodeId,
+        label: node.lane === 'hardware' ? '演进' : '派生',
+        critical: false,
+        kind: 'tree',
+      };
+      const createdEdgeId = await this.pluginAddRecord(
         EDGE_PLUGIN_ID,
-        toNewEdgeFields({
-          source: parentId,
-          target: createdNodeId,
-          label: node.lane === 'hardware' ? '演进' : '派生',
-          critical: false,
-          kind: 'tree',
-        }),
+        toNewEdgeFields(edgeInput),
       );
+      createdEdge = { id: createdEdgeId, ...edgeInput };
     }
-    return this.getGraph();
+    return {
+      node: {
+        ...node,
+        id: createdNodeId,
+        linkedIds: parentId ? [parentId] : [],
+      },
+      edge: createdEdge,
+      savedAt: formatNowTime(),
+    };
   }
 
-  async deleteNode(nodeId: string): Promise<ProjectGraphResponse> {
+  async deleteNode(nodeId: string): Promise<DeleteProjectGraphNodeResponse> {
     if (!nodeId) {
       throw new BadRequestException('nodeId is required');
     }
-    const node = await this.findNodeByNodeId(nodeId);
-    if (!node) {
-      throw new BadRequestException('node not found');
+    let recordId = nodeId;
+    if (!isBaseRecordId(nodeId)) {
+      const node = await this.findNodeByNodeId(nodeId);
+      if (!node) {
+        throw new BadRequestException('node not found');
+      }
+      recordId = node.id;
     }
-    await this.pluginDeleteRecord(NODE_PLUGIN_ID, node.id);
-    return this.getGraph();
+    await this.pluginDeleteRecord(NODE_PLUGIN_ID, recordId);
+    return { deletedNodeId: nodeId, savedAt: formatNowTime() };
   }
 
   async createEdge(
@@ -735,6 +752,10 @@ function extractFirstLinkId(
 ): string | null {
   const ids = extractLinkIds(value, recordIdSet);
   return ids[0] ?? null;
+}
+
+function isBaseRecordId(value: string): boolean {
+  return /^rec[0-9A-Za-z_]+$/.test(value);
 }
 
 function normalizeProgress(value: number): number {
