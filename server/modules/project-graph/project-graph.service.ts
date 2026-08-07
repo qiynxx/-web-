@@ -12,13 +12,17 @@ import type {
   CreateProjectGraphNodeResponse,
   CreateProjectGraphEdgeRequest,
   CreateProjectGraphNodeRequest,
+  CreateProjectWorkspaceRequest,
   DeleteProjectGraphNodeResponse,
+  BaseLinkConfig,
   ProjectGraphEdge,
   ProjectGraphNode,
   ProjectGraphResponse,
   ProjectLane,
   ProjectNodeStatus,
   ProjectOwner,
+  ProjectWorkspace,
+  ProjectWorkspaceListResponse,
   UpdateProjectGraphEdgeRequest,
   UpdateProjectGraphNodeRequest,
 } from '@shared/api.interface';
@@ -31,6 +35,16 @@ import {
 
 const NODE_PLUGIN_ID = 'project_graph_node_crud_1';
 const EDGE_PLUGIN_ID = 'project_graph_connection_bitable_crud_1';
+const PROJECT_PLUGIN_ID = 'project_graph_project_crud_1';
+
+const DEFAULT_BASE: BaseLinkConfig = {
+  baseToken: 'WC3cb3acOaminMsXKbTcwPKdnMg',
+  nodeTableId: 'tblVIjVsxIbuk1QQ',
+  edgeTableId: 'tblFSCyy1hjLEFO5',
+  url: 'https://my.feishu.cn/base/WC3cb3acOaminMsXKbTcwPKdnMg',
+};
+const DEFAULT_PROJECT_RECORD_ID = 'recvrkK0GUt2Sf';
+const PROJECT_META_MARKER = '[project-graph-meta]';
 
 const BASE_URL =
   'https://my.feishu.cn/base/WC3cb3acOaminMsXKbTcwPKdnMg?table=tblVIjVsxIbuk1QQ&view=vewqWl33qS';
@@ -68,22 +82,122 @@ const EDGE_FIELD = {
   TARGET: '目标节点',
 } as const;
 
+const PROJECT_FIELD = {
+  CODE: '项目编码',
+  NAME: '项目名称',
+  STATUS: '状态',
+  DESCRIPTION: '说明',
+} as const;
+
 type PluginRecord = { id: string; record: Record<string, unknown> };
+
+interface ProjectWorkspaceMeta {
+  parentId?: string;
+  sort: number;
+  source: ProjectWorkspace['source'];
+  base: BaseLinkConfig;
+}
 
 @Injectable()
 export class ProjectGraphService {
   private readonly logger = new Logger(ProjectGraphService.name);
+  private projectCatalogCache?: {
+    expiresAt: number;
+    value: ProjectWorkspaceListResponse;
+  };
 
   constructor(
     private readonly capabilityService: CapabilityService,
     private readonly authnService: AuthNPaasService,
   ) {}
 
-  async getGraph(): Promise<ProjectGraphResponse> {
+  async listProjects(): Promise<ProjectWorkspaceListResponse> {
+    if (
+      this.projectCatalogCache &&
+      this.projectCatalogCache.expiresAt > Date.now()
+    ) {
+      return this.projectCatalogCache.value;
+    }
+    const records = await this.searchAllRecords(PROJECT_PLUGIN_ID);
+    const projects = records.map((record, index) =>
+      mapProjectRecord(record, index),
+    );
+    if (projects.length === 0) {
+      projects.push(buildDefaultWorkspace());
+    }
+    const defaultProjectId =
+      projects.find((project) => project.code === 'headset-rd')?.id ??
+      projects[0].id;
+    const value = { projects, defaultProjectId };
+    this.projectCatalogCache = {
+      expiresAt: Date.now() + 5_000,
+      value,
+    };
+    return value;
+  }
+
+  async createProject(
+    request: CreateProjectWorkspaceRequest,
+  ): Promise<ProjectWorkspace> {
+    const name = request.name?.trim();
+    if (!name) {
+      throw new BadRequestException('项目名称不能为空');
+    }
+    if (request.source !== 'shared-base' && request.source !== 'linked-base') {
+      throw new BadRequestException('项目数据源无效');
+    }
+    const base =
+      request.source === 'linked-base'
+        ? parseLinkedBase(request)
+        : DEFAULT_BASE;
+    if (request.source === 'linked-base') {
+      await Promise.all([
+        this.searchAllRecords(NODE_PLUGIN_ID, base, 1),
+        this.searchAllRecords(EDGE_PLUGIN_ID, base, 1),
+      ]);
+    }
+    const code = `project-${Date.now()}`;
+    const meta: ProjectWorkspaceMeta = {
+      parentId: request.parentId || undefined,
+      sort: Date.now(),
+      source: request.source,
+      base,
+    };
+    const recordId = await this.pluginAddRecord(PROJECT_PLUGIN_ID, {
+      [PROJECT_FIELD.CODE]: code,
+      [PROJECT_FIELD.NAME]: name,
+      [PROJECT_FIELD.STATUS]: '规划',
+      [PROJECT_FIELD.DESCRIPTION]: encodeProjectDescription(
+        request.description ?? '',
+        meta,
+      ),
+    });
+    this.projectCatalogCache = undefined;
+    return {
+      id: recordId,
+      code,
+      name,
+      description: request.description?.trim() ?? '',
+      status: 'planned',
+      parentId: meta.parentId,
+      sort: meta.sort,
+      source: meta.source,
+      base,
+      writable: true,
+      updatedAt: formatNowTime(),
+    };
+  }
+
+  async getGraph(projectId?: string): Promise<ProjectGraphResponse> {
     try {
-      return await this.buildBaseGraph();
+      const project = await this.resolveProject(projectId);
+      return await this.buildBaseGraph(project);
     } catch (error: unknown) {
-      if (error instanceof ForbiddenException) {
+      if (
+        error instanceof ForbiddenException ||
+        (error instanceof BadRequestException &&
+          error.message === '项目不存在或已被移除')
+      ) {
         throw error;
       }
       this.logger.warn(
@@ -98,27 +212,37 @@ export class ProjectGraphService {
   async updateNode(
     nodeId: string,
     patch: UpdateProjectGraphNodeRequest,
+    projectId?: string,
   ): Promise<ProjectGraphResponse> {
     if (!nodeId) {
       throw new BadRequestException('nodeId is required');
     }
-    const node = await this.findNodeByNodeId(nodeId);
-    if (!node) {
-      throw new BadRequestException('node not found');
-    }
-    await this.pluginUpdateRecord(NODE_PLUGIN_ID, node.id, toNodeFields(patch));
-    return this.getGraph();
+    const project = await this.resolveProject(projectId);
+    const node = isBaseRecordId(nodeId)
+      ? { id: nodeId }
+      : await this.findNodeByNodeId(nodeId, project.base);
+    if (!node) throw new BadRequestException('node not found');
+    await this.pluginUpdateRecord(
+      NODE_PLUGIN_ID,
+      node.id,
+      toNodeFields(patch),
+      project.base,
+    );
+    return this.getGraph(project.id);
   }
 
   async createNode(
     node: CreateProjectGraphNodeRequest,
+    projectId?: string,
   ): Promise<CreateProjectGraphNodeResponse> {
     if (!node.title) {
       throw new BadRequestException('title is required');
     }
+    const project = await this.resolveProject(projectId);
     const createdNodeId = await this.pluginAddRecord(
       NODE_PLUGIN_ID,
-      toNewNodeFields(node),
+      toNewNodeFields(node, project),
+      project.base,
     );
     const parentId = node.linkedIds?.[0];
     let createdEdge: ProjectGraphEdge | undefined;
@@ -132,7 +256,8 @@ export class ProjectGraphService {
       };
       const createdEdgeId = await this.pluginAddRecord(
         EDGE_PLUGIN_ID,
-        toNewEdgeFields(edgeInput),
+        toNewEdgeFields(edgeInput, project),
+        project.base,
       );
       createdEdge = { id: createdEdgeId, ...edgeInput };
     }
@@ -147,68 +272,95 @@ export class ProjectGraphService {
     };
   }
 
-  async deleteNode(nodeId: string): Promise<DeleteProjectGraphNodeResponse> {
+  async deleteNode(
+    nodeId: string,
+    projectId?: string,
+  ): Promise<DeleteProjectGraphNodeResponse> {
     if (!nodeId) {
       throw new BadRequestException('nodeId is required');
     }
+    const project = await this.resolveProject(projectId);
     let recordId = nodeId;
     if (!isBaseRecordId(nodeId)) {
-      const node = await this.findNodeByNodeId(nodeId);
+      const node = await this.findNodeByNodeId(nodeId, project.base);
       if (!node) {
         throw new BadRequestException('node not found');
       }
       recordId = node.id;
     }
-    await this.pluginDeleteRecord(NODE_PLUGIN_ID, recordId);
+    await this.pluginDeleteRecord(NODE_PLUGIN_ID, recordId, project.base);
     return { deletedNodeId: nodeId, savedAt: formatNowTime() };
   }
 
   async createEdge(
     edge: CreateProjectGraphEdgeRequest,
+    projectId?: string,
   ): Promise<ProjectGraphResponse> {
     if (!edge.source || !edge.target) {
       throw new BadRequestException('source and target are required');
     }
-    await this.pluginAddRecord(EDGE_PLUGIN_ID, toNewEdgeFields(edge));
-    return this.getGraph();
+    const project = await this.resolveProject(projectId);
+    await this.pluginAddRecord(
+      EDGE_PLUGIN_ID,
+      toNewEdgeFields(edge, project),
+      project.base,
+    );
+    return this.getGraph(project.id);
   }
 
   async updateEdge(
     edgeId: string,
     patch: UpdateProjectGraphEdgeRequest,
+    projectId?: string,
   ): Promise<ProjectGraphResponse> {
     if (!edgeId) {
       throw new BadRequestException('edgeId is required');
     }
-    const record = await this.findEdgeByEdgeId(edgeId);
-    if (!record) {
-      throw new BadRequestException('edge not found');
-    }
-    await this.pluginUpdateRecord(EDGE_PLUGIN_ID, record.id, toEdgeFields(patch));
-    return this.getGraph();
+    const project = await this.resolveProject(projectId);
+    const record = isBaseRecordId(edgeId)
+      ? { id: edgeId }
+      : await this.findEdgeByEdgeId(edgeId, project.base);
+    if (!record) throw new BadRequestException('edge not found');
+    await this.pluginUpdateRecord(
+      EDGE_PLUGIN_ID,
+      record.id,
+      toEdgeFields(patch),
+      project.base,
+    );
+    return this.getGraph(project.id);
   }
 
-  async deleteEdge(edgeId: string): Promise<ProjectGraphResponse> {
+  async deleteEdge(
+    edgeId: string,
+    projectId?: string,
+  ): Promise<ProjectGraphResponse> {
     if (!edgeId) {
       throw new BadRequestException('edgeId is required');
     }
-    const record = await this.findEdgeByEdgeId(edgeId);
-    if (!record) {
-      throw new BadRequestException('edge not found');
-    }
-    await this.pluginDeleteRecord(EDGE_PLUGIN_ID, record.id);
-    return this.getGraph();
+    const project = await this.resolveProject(projectId);
+    const record = isBaseRecordId(edgeId)
+      ? { id: edgeId }
+      : await this.findEdgeByEdgeId(edgeId, project.base);
+    if (!record) throw new BadRequestException('edge not found');
+    await this.pluginDeleteRecord(EDGE_PLUGIN_ID, record.id, project.base);
+    return this.getGraph(project.id);
   }
 
   // --- Plugin Base operations ---
 
   private async searchAllRecords(
     pluginId: string,
+    base?: BaseLinkConfig,
+    maxRecords?: number,
   ): Promise<PluginRecord[]> {
     const allRecords: PluginRecord[] = [];
     let pageToken: string | undefined;
     do {
-      const input: Record<string, unknown> = { pageSize: 500 };
+      const input: Record<string, unknown> = this.withBaseBinding(
+        pluginId,
+        { pageSize: maxRecords ?? 500 },
+        base,
+      );
       if (pageToken) {
         input.pageToken = pageToken;
       }
@@ -220,6 +372,9 @@ export class ProjectGraphService {
       if (result.records) {
         allRecords.push(...result.records);
       }
+      if (maxRecords && allRecords.length >= maxRecords) {
+        return allRecords.slice(0, maxRecords);
+      }
       pageToken = result.hasMore ? result.pageToken : undefined;
     } while (pageToken);
     return allRecords;
@@ -228,10 +383,15 @@ export class ProjectGraphService {
   private async pluginAddRecord(
     pluginId: string,
     record: Record<string, unknown>,
+    base?: BaseLinkConfig,
   ): Promise<string> {
     const result = await this.callPlugin<{
       records: Array<{ id: string }>;
-    }>(pluginId, 'batchAddRecords', { records: [{ record }] });
+    }>(
+      pluginId,
+      'batchAddRecords',
+      this.withBaseBinding(pluginId, { records: [{ record }] }, base),
+    );
     if (!result.records?.[0]?.id) {
       throw new BadRequestException('Base record creation returned no id');
     }
@@ -242,19 +402,43 @@ export class ProjectGraphService {
     pluginId: string,
     recordId: string,
     record: Record<string, unknown>,
+    base?: BaseLinkConfig,
   ): Promise<void> {
-    await this.callPlugin(pluginId, 'batchUpdateRecords', {
-      records: [{ id: recordId, record }],
-    });
+    await this.callPlugin(
+      pluginId,
+      'batchUpdateRecords',
+      this.withBaseBinding(
+        pluginId,
+        { records: [{ id: recordId, record }] },
+        base,
+      ),
+    );
   }
 
   private async pluginDeleteRecord(
     pluginId: string,
     recordId: string,
+    base?: BaseLinkConfig,
   ): Promise<void> {
-    await this.callPlugin(pluginId, 'deleteRecords', {
-      recordIDs: [recordId],
-    });
+    await this.callPlugin(
+      pluginId,
+      'deleteRecords',
+      this.withBaseBinding(pluginId, { recordIDs: [recordId] }, base),
+    );
+  }
+
+  private withBaseBinding(
+    pluginId: string,
+    input: Record<string, unknown>,
+    base?: BaseLinkConfig,
+  ): Record<string, unknown> {
+    if (!base || pluginId === PROJECT_PLUGIN_ID) return input;
+    return {
+      ...input,
+      baseToken: base.baseToken,
+      tableId:
+        pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId,
+    };
   }
 
   private async callPlugin<T = unknown>(
@@ -290,20 +474,36 @@ export class ProjectGraphService {
 
   // --- Graph assembly ---
 
-  private async buildBaseGraph(): Promise<ProjectGraphResponse> {
+  private async resolveProject(projectId?: string): Promise<ProjectWorkspace> {
+    const catalog = await this.listProjects();
+    const targetId = projectId || catalog.defaultProjectId;
+    const project = catalog.projects.find((item) => item.id === targetId);
+    if (!project) {
+      throw new BadRequestException('项目不存在或已被移除');
+    }
+    return project;
+  }
+
+  private async buildBaseGraph(
+    project: ProjectWorkspace,
+  ): Promise<ProjectGraphResponse> {
     const [nodeRecords, edgeRecords] = await Promise.all([
-      this.searchAllRecords(NODE_PLUGIN_ID),
-      this.searchAllRecords(EDGE_PLUGIN_ID),
+      this.searchAllRecords(NODE_PLUGIN_ID, project.base),
+      this.searchAllRecords(EDGE_PLUGIN_ID, project.base),
     ]);
-    const nodeIds = new Set<string>(
-      nodeRecords.map((r) => r.id),
-    );
-    const mappedNodes = nodeRecords.map((r) =>
+    const scopedNodeRecords =
+      project.source === 'shared-base'
+        ? nodeRecords.filter((record) =>
+            extractLinkIds(
+              record.record[NODE_FIELD.PROJECT],
+              new Set([project.id]),
+            ).includes(project.id),
+          )
+        : nodeRecords;
+    const nodeIds = new Set<string>(scopedNodeRecords.map((r) => r.id));
+    const mappedNodes = scopedNodeRecords.map((r) =>
       this.mapGraphNodeRecordToNode(r.record, r.id, nodeIds),
     );
-    if (mappedNodes.length === 0) {
-      return this.buildStaticGraph();
-    }
     const mappedEdges = this.mapEdgeRecords(edgeRecords, nodeIds);
     const { nodes, edges } = reconcileGraphRelationships(
       mappedNodes,
@@ -316,9 +516,10 @@ export class ProjectGraphService {
       metrics: buildStaticMetrics(nodes),
       baselines: buildStaticBaselines(),
       base: {
-        url: BASE_URL,
-        nodeTableId: 'tblVIjVsxIbuk1QQ',
-        edgeTableId: 'tblFSCyy1hjLEFO5',
+        ...project.base,
+        url:
+          project.base.url ??
+          `https://my.feishu.cn/base/${project.base.baseToken}`,
       },
       writable: true,
       savedAt: formatNowTime(),
@@ -349,10 +550,7 @@ export class ProjectGraphService {
     recordId: string,
     recordIdSet: Set<string>,
   ): ProjectGraphNode {
-    const rawLinkedIds = extractLinkIds(
-      record[NODE_FIELD.PARENT],
-      recordIdSet,
-    );
+    const rawLinkedIds = extractLinkIds(record[NODE_FIELD.PARENT], recordIdSet);
     const groupValue = extractText(record[NODE_FIELD.GROUP]);
     const typeValue = extractText(record[NODE_FIELD.TYPE]);
     const laneValue = toProjectLane(typeValue, groupValue);
@@ -363,9 +561,9 @@ export class ProjectGraphService {
       lane: laneValue,
       kind: toProjectNodeKind(typeValue, laneValue),
       status: toProjectStatus(extractText(record[NODE_FIELD.STATUS])),
-      owner:
-        this.extractOwner(record[NODE_FIELD.OWNER]) ??
-        this.extractOwner(record[NODE_FIELD.LEGACY_OWNER]),
+      owners: this.extractOwners(record[NODE_FIELD.OWNER]).length
+        ? this.extractOwners(record[NODE_FIELD.OWNER])
+        : this.extractOwners(record[NODE_FIELD.LEGACY_OWNER]),
       progress: normalizeProgress(extractNumber(record[NODE_FIELD.PROGRESS])),
       version: extractText(record[NODE_FIELD.VERSION]),
       date: formatDateValue(record[NODE_FIELD.DATE]),
@@ -394,14 +592,8 @@ export class ProjectGraphService {
     recordId: string,
     recordIdSet: Set<string>,
   ): ProjectGraphEdge | null {
-    const sourceId = extractFirstLinkId(
-      record[EDGE_FIELD.SOURCE],
-      recordIdSet,
-    );
-    const targetId = extractFirstLinkId(
-      record[EDGE_FIELD.TARGET],
-      recordIdSet,
-    );
+    const sourceId = extractFirstLinkId(record[EDGE_FIELD.SOURCE], recordIdSet);
+    const targetId = extractFirstLinkId(record[EDGE_FIELD.TARGET], recordIdSet);
     if (!sourceId || !targetId) {
       return null;
     }
@@ -414,56 +606,62 @@ export class ProjectGraphService {
         extractText(record[EDGE_FIELD.NAME]) ||
         '依赖',
       critical: Boolean(record[EDGE_FIELD.CRITICAL]),
-      kind:
-        extractText(record[EDGE_FIELD.TYPE]) === '主树' ? 'tree' : 'cross',
+      kind: extractText(record[EDGE_FIELD.TYPE]) === '主树' ? 'tree' : 'cross',
     };
   }
 
   // --- Owner handling ---
 
-  private extractOwner(value: unknown): ProjectOwner | null {
-    if (value == null) return null;
+  private extractOwners(value: unknown): ProjectOwner[] {
+    if (value == null) return [];
     if (Array.isArray(value)) {
-      const first = value[0];
-      if (first == null) return null;
-      if (typeof first === 'object') {
-        const item = first as Record<string, unknown>;
-        const rawId = item.id ?? item.user_id ?? item.userId;
-        const userId = rawId == null ? '' : String(rawId);
-        if (!userId || userId === '0') return null;
-        return {
-          apaasUserId: userId,
-          name: extractText(item.name),
-          avatar: extractText(item.avatar) || undefined,
-          email: extractText(item.email) || undefined,
-        };
-      }
-      const userId = String(first);
-      if (!userId || userId === '0') return null;
-      return { apaasUserId: userId, name: '' };
+      return value
+        .map((entry): ProjectOwner | null => {
+          if (entry == null) return null;
+          if (typeof entry === 'object') {
+            const item = entry as Record<string, unknown>;
+            const rawId = item.id ?? item.user_id ?? item.userId;
+            const userId = rawId == null ? '' : String(rawId);
+            if (!userId || userId === '0') return null;
+            return {
+              apaasUserId: userId,
+              name: extractText(item.name),
+              avatar: extractText(item.avatar) || undefined,
+              email: extractText(item.email) || undefined,
+            };
+          }
+          const userId = String(entry);
+          if (!userId || userId === '0') return null;
+          return { apaasUserId: userId, name: '' };
+        })
+        .filter((owner): owner is ProjectOwner => Boolean(owner));
     }
     if (typeof value === 'string') {
       const trimmed = value.trim();
-      if (!trimmed) return null;
-      if (trimmed === '待指定') return null;
-      return { apaasUserId: '', name: trimmed };
+      if (!trimmed || trimmed === '待指定') return [];
+      return trimmed
+        .split('/')
+        .map((name) => name.trim())
+        .filter(Boolean)
+        .map((name) => ({ apaasUserId: '', name }));
     }
     if (typeof value === 'number') {
-      if (value === 0) return null;
-      return { apaasUserId: String(value), name: '' };
+      if (value === 0) return [];
+      return [{ apaasUserId: String(value), name: '' }];
     }
-    return null;
+    return [];
   }
 
   private async enrichOwnerIds(nodes: ProjectGraphNode[]): Promise<void> {
     const owners = nodes
-      .map((node) => node.owner)
-      .filter((owner): owner is ProjectOwner => Boolean(owner?.apaasUserId));
+      .flatMap((node) => node.owners)
+      .filter((owner) => Boolean(owner.apaasUserId));
     const uniqueIds = [...new Set(owners.map((owner) => owner.apaasUserId))];
     if (uniqueIds.length === 0) return;
 
     try {
-      const larkUserIds = await this.authnService.getBatchLarkUserIds(uniqueIds);
+      const larkUserIds =
+        await this.authnService.getBatchLarkUserIds(uniqueIds);
       const mapping = new Map<string, string>();
       uniqueIds.forEach((id, index) => {
         const larkUserId = larkUserIds[index];
@@ -481,8 +679,9 @@ export class ProjectGraphService {
 
   private async findNodeByNodeId(
     nodeId: string,
+    base: BaseLinkConfig,
   ): Promise<PluginRecord | null> {
-    const records = await this.searchAllRecords(NODE_PLUGIN_ID);
+    const records = await this.searchAllRecords(NODE_PLUGIN_ID, base);
     return (
       records.find(
         (r) =>
@@ -494,8 +693,9 @@ export class ProjectGraphService {
 
   private async findEdgeByEdgeId(
     edgeId: string,
+    base: BaseLinkConfig,
   ): Promise<PluginRecord | null> {
-    const records = await this.searchAllRecords(EDGE_PLUGIN_ID);
+    const records = await this.searchAllRecords(EDGE_PLUGIN_ID, base);
     return (
       records.find(
         (r) =>
@@ -504,6 +704,125 @@ export class ProjectGraphService {
       ) ?? null
     );
   }
+}
+
+function mapProjectRecord(
+  record: PluginRecord,
+  index: number,
+): ProjectWorkspace {
+  const rawDescription = extractText(record.record[PROJECT_FIELD.DESCRIPTION]);
+  const { description, meta } = decodeProjectDescription(rawDescription);
+  return {
+    id: record.id,
+    code:
+      extractText(record.record[PROJECT_FIELD.CODE]) || `project-${record.id}`,
+    name: extractText(record.record[PROJECT_FIELD.NAME]) || '未命名项目',
+    description,
+    status: toProjectWorkspaceStatus(
+      extractText(record.record[PROJECT_FIELD.STATUS]),
+    ),
+    parentId: meta?.parentId,
+    sort: meta?.sort ?? index,
+    source: meta?.source ?? 'shared-base',
+    base: meta?.base ?? DEFAULT_BASE,
+    writable: true,
+  };
+}
+
+function buildDefaultWorkspace(): ProjectWorkspace {
+  return {
+    id: DEFAULT_PROJECT_RECORD_ID,
+    code: 'headset-rd',
+    name: '默认头戴项目',
+    description: '硬件主干与软件分支项目图谱',
+    status: 'active',
+    sort: 0,
+    source: 'shared-base',
+    base: DEFAULT_BASE,
+    writable: true,
+  };
+}
+
+function toProjectWorkspaceStatus(value: string): ProjectWorkspace['status'] {
+  if (value === '推进中') return 'active';
+  if (value === '暂停') return 'paused';
+  if (value === '归档') return 'archived';
+  return 'planned';
+}
+
+function encodeProjectDescription(
+  description: string,
+  meta: ProjectWorkspaceMeta,
+): string {
+  const text = description.trim();
+  const encoded = `${PROJECT_META_MARKER}${JSON.stringify(meta)}`;
+  return text ? `${text}\n\n${encoded}` : encoded;
+}
+
+function decodeProjectDescription(value: string): {
+  description: string;
+  meta?: ProjectWorkspaceMeta;
+} {
+  const markerIndex = value.lastIndexOf(PROJECT_META_MARKER);
+  if (markerIndex < 0) return { description: value.trim() };
+  const description = value.slice(0, markerIndex).trim();
+  try {
+    const candidate = JSON.parse(
+      value.slice(markerIndex + PROJECT_META_MARKER.length),
+    ) as Partial<ProjectWorkspaceMeta>;
+    if (
+      (candidate.source === 'shared-base' ||
+        candidate.source === 'linked-base') &&
+      candidate.base &&
+      typeof candidate.base.baseToken === 'string' &&
+      typeof candidate.base.nodeTableId === 'string' &&
+      typeof candidate.base.edgeTableId === 'string'
+    ) {
+      return {
+        description,
+        meta: {
+          parentId:
+            typeof candidate.parentId === 'string'
+              ? candidate.parentId
+              : undefined,
+          sort: Number(candidate.sort) || 0,
+          source: candidate.source,
+          base: candidate.base,
+        },
+      };
+    }
+  } catch {
+    return { description: value.trim() };
+  }
+  return { description };
+}
+
+function parseLinkedBase(
+  request: CreateProjectWorkspaceRequest,
+): BaseLinkConfig {
+  const rawUrl = request.baseUrl?.trim() ?? '';
+  const tokenMatch = /\/base\/([^/?#]+)/u.exec(rawUrl);
+  if (!tokenMatch) {
+    throw new BadRequestException('请粘贴飞书多维表格的 Base 链接');
+  }
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new BadRequestException('飞书 Base 链接格式无效');
+  }
+  const nodeTableId =
+    request.nodeTableId?.trim() || url.searchParams.get('table');
+  const edgeTableId = request.edgeTableId?.trim();
+  if (!nodeTableId?.startsWith('tbl') || !edgeTableId?.startsWith('tbl')) {
+    throw new BadRequestException('需要有效的节点表 ID 和关系表 ID');
+  }
+  return {
+    baseToken: tokenMatch[1],
+    nodeTableId,
+    edgeTableId,
+    url: rawUrl,
+  };
 }
 
 // --- Field builders ---
@@ -521,8 +840,8 @@ function toNodeFields(
   if (patch.status) {
     fields[NODE_FIELD.STATUS] = toBaseStatus(patch.status);
   }
-  if (patch.owner !== undefined) {
-    fields[NODE_FIELD.OWNER] = ownerToBaseFieldStatic(patch.owner);
+  if (patch.owners !== undefined) {
+    fields[NODE_FIELD.OWNER] = ownersToBaseFieldStatic(patch.owners);
   }
   if (typeof patch.progress === 'number') {
     fields[NODE_FIELD.PROGRESS] = normalizeProgress(patch.progress);
@@ -553,6 +872,7 @@ function toNodeFields(
 
 function toNewNodeFields(
   node: CreateProjectGraphNodeRequest,
+  project: ProjectWorkspace,
 ): Record<string, unknown> {
   const fields: Record<string, unknown> = {
     [NODE_FIELD.NAME]: node.title,
@@ -571,8 +891,11 @@ function toNewNodeFields(
     [NODE_FIELD.IMAGE]: node.imageUrl ?? '',
     [NODE_FIELD.SORT]: 0,
   };
-  if (node.owner) {
-    fields[NODE_FIELD.OWNER] = ownerToBaseFieldStatic(node.owner);
+  if (project.source === 'shared-base') {
+    fields[NODE_FIELD.PROJECT] = toLinkField(project.id);
+  }
+  if ((node.owners ?? []).length > 0) {
+    fields[NODE_FIELD.OWNER] = ownersToBaseFieldStatic(node.owners);
   }
   return fields;
 }
@@ -592,8 +915,9 @@ function toEdgeFields(
 
 function toNewEdgeFields(
   edge: CreateProjectGraphEdgeRequest,
+  project: ProjectWorkspace,
 ): Record<string, unknown> {
-  return {
+  const fields: Record<string, unknown> = {
     [EDGE_FIELD.NAME]: `${edge.source}-${edge.target}`,
     [EDGE_FIELD.EDGE_ID]: `edge-${Date.now()}`,
     [EDGE_FIELD.TYPE]: edge.kind === 'tree' ? '主树' : '跨节点',
@@ -603,6 +927,10 @@ function toNewEdgeFields(
     [EDGE_FIELD.SOURCE]: toLinkField(edge.source),
     [EDGE_FIELD.TARGET]: toLinkField(edge.target),
   };
+  if (project.source === 'shared-base') {
+    fields[EDGE_FIELD.PROJECT] = toLinkField(project.id);
+  }
+  return fields;
 }
 
 function reconcileGraphRelationships(
@@ -630,8 +958,8 @@ function reconcileGraphRelationships(
     );
     const parentEdge = linkedParentId
       ? incoming.find((edge) => edge.source === linkedParentId)
-      : incoming.find((edge) => edge.kind === 'tree') ??
-        (incoming.length === 1 ? incoming[0] : undefined);
+      : (incoming.find((edge) => edge.kind === 'tree') ??
+        (incoming.length === 1 ? incoming[0] : undefined));
     if (parentEdge) {
       treeEdgeIds.add(parentEdge.id);
     }
@@ -649,13 +977,14 @@ function reconcileGraphRelationships(
   return { nodes: reconciledNodes, edges: reconciledEdges };
 }
 
-function ownerToBaseFieldStatic(owner: ProjectOwner | null): number[] {
-  if (!owner || !owner.apaasUserId) return [];
-  const num = Number(owner.apaasUserId);
-  if (!Number.isSafeInteger(num) || num <= 0) {
-    throw new BadRequestException('负责人缺少有效的妙搭人员 ID');
-  }
-  return [num];
+function ownersToBaseFieldStatic(owners: ProjectOwner[]): number[] {
+  return [...new Set(owners.map((owner) => owner.apaasUserId))].map((id) => {
+    const num = Number(id);
+    if (!Number.isSafeInteger(num) || num <= 0) {
+      throw new BadRequestException('负责人缺少有效的妙搭人员 ID');
+    }
+    return num;
+  });
 }
 
 function toLinkField(recordId?: string): string[] {
@@ -791,7 +1120,12 @@ function toBaseStatus(status: ProjectNodeStatus): string {
 function toProjectStatus(value: string): ProjectNodeStatus {
   if (!value) return 'planned';
   if (value.includes('规划') || value.includes('planned')) return 'planned';
-  if (value.includes('正常') || value.includes('推进') || value.includes('active')) return 'active';
+  if (
+    value.includes('正常') ||
+    value.includes('推进') ||
+    value.includes('active')
+  )
+    return 'active';
   if (value.includes('评审') || value.includes('review')) return 'review';
   if (value.includes('测试') || value.includes('testing')) return 'testing';
   if (value.includes('阻塞') || value.includes('blocked')) return 'blocked';
@@ -806,12 +1140,14 @@ function toProjectStatus(value: string): ProjectNodeStatus {
 function toProjectLane(typeValue: string, groupValue: string): ProjectLane {
   const group = groupValue.toLowerCase();
   if (group.includes('硬件') || group.includes('hardware')) return 'hardware';
-  if (group.includes('联调') || group.includes('integration')) return 'integration';
+  if (group.includes('联调') || group.includes('integration'))
+    return 'integration';
   if (group.includes('软件') || group.includes('software')) return 'software';
 
   const type = typeValue.toLowerCase();
   if (type.includes('硬件') || type.includes('hardware')) return 'hardware';
-  if (type.includes('联调') || type.includes('integration')) return 'integration';
+  if (type.includes('联调') || type.includes('integration'))
+    return 'integration';
   return 'software';
 }
 
@@ -831,7 +1167,8 @@ function toProjectNodeKind(
   if (type.includes('风险') || type.includes('risk')) return 'risk';
   if (type.includes('发布') || type.includes('release')) return 'release';
   if (type.includes('测试') || type.includes('test')) return 'test';
-  if (type.includes('联调') || type.includes('integration')) return 'integration';
+  if (type.includes('联调') || type.includes('integration'))
+    return 'integration';
   if (type.includes('硬件') || type.includes('hardware')) return 'hardware';
   if (type.includes('软件') || type.includes('software')) return 'software';
   return lane === 'hardware'
@@ -845,7 +1182,10 @@ function toBaseNodeType(
   kind: import('@shared/api.interface').ProjectNodeKind,
   lane: ProjectLane,
 ): string {
-  const kindLabel: Record<import('@shared/api.interface').ProjectNodeKind, string> = {
+  const kindLabel: Record<
+    import('@shared/api.interface').ProjectNodeKind,
+    string
+  > = {
     project: '项目',
     issue: '问题',
     hardware: '硬件',

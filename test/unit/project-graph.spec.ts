@@ -12,13 +12,11 @@ describe('project-graph-static', () => {
       const nodes = buildStaticNodes();
       expect(nodes.length).toBeGreaterThan(0);
       nodes.forEach((node) => {
-        expect(node.owner === null || typeof node.owner === 'object').toBe(
-          true,
-        );
-        if (node.owner) {
-          expect(typeof node.owner.apaasUserId).toBe('string');
-          expect(typeof node.owner.name).toBe('string');
-        }
+        expect(Array.isArray(node.owners)).toBe(true);
+        node.owners.forEach((owner) => {
+          expect(typeof owner.apaasUserId).toBe('string');
+          expect(typeof owner.name).toBe('string');
+        });
       });
     });
 

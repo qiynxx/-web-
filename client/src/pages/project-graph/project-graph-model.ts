@@ -91,7 +91,7 @@ export type EditableNodePatch = Pick<
   | 'title'
   | 'subtitle'
   | 'status'
-  | 'owner'
+  | 'owners'
   | 'progress'
   | 'version'
   | 'date'
@@ -144,7 +144,7 @@ export function createDefaultNode(
     lane,
     kind,
     status: 'planned',
-    owner: null,
+    owners: [],
     progress: 0,
     version: `draft-${nodeCount + 1}`,
     date: new Date().toISOString().slice(0, 10),
@@ -242,7 +242,7 @@ export function filterNodes(
       [
         node.title,
         node.subtitle,
-        node.owner?.name ?? '',
+        node.owners.map((owner) => owner.name).join(' '),
         node.version,
         node.summary,
         node.nextAction,
@@ -625,7 +625,7 @@ export function writeNodeEdits(nodes: ProjectGraphNode[]): void {
       title: node.title,
       subtitle: node.subtitle,
       status: node.status,
-      owner: node.owner,
+      owners: node.owners,
       progress: node.progress,
       version: node.version,
       date: node.date,
@@ -681,18 +681,20 @@ function findDirectParentId(
     return linkedParentId;
   }
 
-  const edgeParent: ProjectGraphEdge | undefined = edges.find(
-    (edge: ProjectGraphEdge) =>
-      edge.target === node.id &&
-      edge.source !== node.id &&
-      edge.kind === 'tree' &&
-      nodeMap.has(edge.source),
-  ) ?? edges.find(
-    (edge: ProjectGraphEdge) =>
-      edge.target === node.id &&
-      edge.source !== node.id &&
-      nodeMap.has(edge.source),
-  );
+  const edgeParent: ProjectGraphEdge | undefined =
+    edges.find(
+      (edge: ProjectGraphEdge) =>
+        edge.target === node.id &&
+        edge.source !== node.id &&
+        edge.kind === 'tree' &&
+        nodeMap.has(edge.source),
+    ) ??
+    edges.find(
+      (edge: ProjectGraphEdge) =>
+        edge.target === node.id &&
+        edge.source !== node.id &&
+        nodeMap.has(edge.source),
+    );
   if (!edgeParent) {
     return undefined;
   }
@@ -904,7 +906,7 @@ function isProjectGraphNode(value: unknown): value is ProjectGraphNode {
     typeof candidate.title === 'string' &&
     typeof candidate.subtitle === 'string' &&
     isProjectLane(candidate.lane) &&
-    (candidate.owner === null || typeof candidate.owner === 'object') &&
+    Array.isArray(candidate.owners) &&
     typeof candidate.progress === 'number' &&
     typeof candidate.version === 'string' &&
     typeof candidate.date === 'string' &&

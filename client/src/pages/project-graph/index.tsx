@@ -41,40 +41,28 @@ import type {
   CreateProjectGraphNodeResponse,
   CreateProjectGraphEdgeRequest,
   CreateProjectGraphNodeRequest,
+  CreateProjectWorkspaceRequest,
+  ProjectWorkspace,
   UpdateProjectGraphNodeRequest,
 } from '@shared/api.interface';
 import {
-  applyNodeEdits,
   buildUiMetrics,
   clampProgress,
-  clearNodeEdits,
-  createProjectLibraryItem,
   createDefaultNode,
   createEdge,
-  DEFAULT_PROJECT_ID,
   filterNodes,
   LANE_LABELS,
   laneOptions,
   layoutGraph,
-  normalizeImportedProject,
   parseCommaList,
   parseLineList,
   readActiveProjectId,
-  readGraphDraft,
-  readNodeEdits,
-  readProjectLibrary,
   STATUS_CLASS,
   STATUS_LABELS,
   statusOptions,
-  upsertProjectGraph,
   writeActiveProjectId,
-  writeGraphDraft,
-  writeNodeEdits,
-  writeProjectLibrary,
   type EditableNodePatch,
   type GraphLayout,
-  type ProjectGraphDraft,
-  type ProjectLibraryItem,
 } from './project-graph-model';
 import './project-graph.css';
 import { UniversalLink } from '@lark-apaas/client-toolkit/components/UniversalLink';
@@ -87,28 +75,34 @@ const METRIC_ICON: Record<ProjectMetric['tone'], typeof CircleDot> = {
   danger: ShieldAlert,
 };
 
-function projectOwnerToUser(owner: ProjectOwner | null): User | null {
-  if (!owner?.apaasUserId) return null;
-  return {
-    user_id: owner.apaasUserId,
-    larkUserId: owner.openId,
-    name: owner.name || '未知用户',
-    avatar: owner.avatar,
-    email: owner.email,
-  };
+function projectOwnersToUsers(owners: ProjectOwner[]): User[] {
+  return owners
+    .filter((owner) => Boolean(owner.apaasUserId))
+    .map((owner) => ({
+      user_id: owner.apaasUserId,
+      larkUserId: owner.openId,
+      name: owner.name || '未知用户',
+      avatar: owner.avatar,
+      email: owner.email,
+    }));
 }
 
-function userToProjectOwner(user: User | null): ProjectOwner | null {
-  if (!user?.user_id) return null;
-  const larkIdentifier = user.larkUserId || undefined;
-  return {
-    apaasUserId: String(user.user_id),
-    openId: larkIdentifier?.startsWith('ou_') ? larkIdentifier : undefined,
-    larkUserId: larkIdentifier?.startsWith('ou_') ? undefined : larkIdentifier,
-    name: getI18nText(user.name) || '未知用户',
-    avatar: user.avatar,
-    email: user.email,
-  };
+function usersToProjectOwners(users: User[]): ProjectOwner[] {
+  return users
+    .filter((user) => Boolean(user.user_id))
+    .map((user) => {
+      const larkIdentifier = user.larkUserId || undefined;
+      return {
+        apaasUserId: String(user.user_id),
+        openId: larkIdentifier?.startsWith('ou_') ? larkIdentifier : undefined,
+        larkUserId: larkIdentifier?.startsWith('ou_')
+          ? undefined
+          : larkIdentifier,
+        name: getI18nText(user.name) || '未知用户',
+        avatar: user.avatar,
+        email: user.email,
+      };
+    });
 }
 
 function getRequestErrorMessage(error: unknown): string {
@@ -139,11 +133,20 @@ function getRequestErrorMessage(error: unknown): string {
 
 function ProjectGraphPage() {
   const [graph, setGraph] = useState<ProjectGraphResponse | null>(null);
-  const [projectLibrary, setProjectLibrary] = useState<ProjectLibraryItem[]>(
-    [],
-  );
-  const [activeProjectId, setActiveProjectId] =
-    useState<string>(DEFAULT_PROJECT_ID);
+  const [projects, setProjects] = useState<ProjectWorkspace[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string>('');
+  const [projectDialogMode, setProjectDialogMode] = useState<
+    'shared-base' | 'linked-base' | null
+  >(null);
+  const [projectForm, setProjectForm] = useState({
+    name: '',
+    description: '',
+    parentId: '',
+    baseUrl: '',
+    nodeTableId: '',
+    edgeTableId: '',
+  });
+  const [creatingProject, setCreatingProject] = useState<boolean>(false);
   const [selectedId, setSelectedId] = useState<string>('hw-gen21');
   const [selectedEdgeId, setSelectedEdgeId] = useState<string>('');
   const [laneFilter, setLaneFilter] = useState<ProjectLane | 'all'>('all');
@@ -157,13 +160,18 @@ function ProjectGraphPage() {
   const [savedAt, setSavedAt] = useState<string>('');
   const [creatingNode, setCreatingNode] = useState<boolean>(false);
   const baseSyncTimersRef = useRef<Record<string, number>>({});
+  const baseSyncPatchesRef = useRef<
+    Record<string, UpdateProjectGraphNodeRequest>
+  >({});
   const creatingNodeRef = useRef<boolean>(false);
   const deletingNodeRef = useRef<boolean>(false);
   const ownerIds = useMemo(
     () => [
       ...new Set(
         (graph?.nodes ?? [])
-          .map((node: ProjectGraphNode) => node.owner?.apaasUserId)
+          .flatMap((node: ProjectGraphNode) =>
+            node.owners.map((owner) => owner.apaasUserId),
+          )
           .filter((id): id is string => Boolean(id)),
       ),
     ],
@@ -179,74 +187,72 @@ function ProjectGraphPage() {
       if (!currentGraph) return currentGraph;
       let changed = false;
       const nodes = currentGraph.nodes.map((node: ProjectGraphNode) => {
-        const owner = node.owner;
-        if (!owner?.apaasUserId) return node;
-        const profile = profileMap[owner.apaasUserId];
-        if (!profile) return node;
-        const item = userInfoToUser(profile, 'apaas');
-        const rawOpenId = profile.larkID || profile.larkUserID || undefined;
-        const nextOwner: ProjectOwner = {
-          ...owner,
-          larkUserId: profile.employeeID || owner.larkUserId,
-          openId: rawOpenId?.startsWith('ou_') ? rawOpenId : owner.openId,
-          name: item.name || owner.name,
-          avatar: item.avatar || owner.avatar,
-          email: profile.email || owner.email,
-        };
-        if (
-          nextOwner.name === owner.name &&
-          nextOwner.avatar === owner.avatar &&
-          nextOwner.email === owner.email &&
-          nextOwner.larkUserId === owner.larkUserId &&
-          nextOwner.openId === owner.openId
-        ) {
-          return node;
-        }
-        changed = true;
-        return { ...node, owner: nextOwner };
+        const nextOwners = node.owners.map((owner) => {
+          if (!owner.apaasUserId) return owner;
+          const profile = profileMap[owner.apaasUserId];
+          if (!profile) return owner;
+          const item = userInfoToUser(profile, 'apaas');
+          const rawOpenId = profile.larkID || profile.larkUserID || undefined;
+          const nextOwner: ProjectOwner = {
+            ...owner,
+            larkUserId: profile.employeeID || owner.larkUserId,
+            openId: rawOpenId?.startsWith('ou_') ? rawOpenId : owner.openId,
+            name: item.name || owner.name,
+            avatar: item.avatar || owner.avatar,
+            email: profile.email || owner.email,
+          };
+          if (
+            nextOwner.name !== owner.name ||
+            nextOwner.avatar !== owner.avatar ||
+            nextOwner.email !== owner.email ||
+            nextOwner.larkUserId !== owner.larkUserId ||
+            nextOwner.openId !== owner.openId
+          ) {
+            changed = true;
+          }
+          return nextOwner;
+        });
+        return changed ? { ...node, owners: nextOwners } : node;
       });
       return changed ? { ...currentGraph, nodes } : currentGraph;
     });
   }, [ownerProfiles]);
 
   useEffect(() => {
-    void loadGraph();
+    void initializeProjects();
   }, []);
 
-  async function loadGraph(projectId?: string): Promise<void> {
+  async function initializeProjects(): Promise<void> {
     setLoading(true);
     setError('');
     try {
-      const targetProjectId: string = projectId ?? readActiveProjectId();
-      const library: ProjectLibraryItem[] = readProjectLibrary();
-      const data: ProjectGraphResponse = await projectGraph.getProjectGraph();
-      const isBaseBacked: boolean = !!data.base;
-      const draft: ProjectGraphDraft | null = isBaseBacked
-        ? null
-        : readGraphDraft();
-      const editedNodes: ProjectGraphNode[] = isBaseBacked
-        ? data.nodes
-        : applyNodeEdits(data.nodes, readNodeEdits());
-      const nextNodes: ProjectGraphNode[] = draft?.nodes ?? editedNodes;
-      const nextEdges: ProjectGraphEdge[] = draft?.edges ?? data.edges;
-      const defaultGraph: ProjectGraphResponse = {
-        ...data,
-        nodes: nextNodes,
-        edges: nextEdges,
-        metrics: buildUiMetrics(nextNodes),
-      };
-      const storedProject: ProjectLibraryItem | undefined = library.find(
-        (item: ProjectLibraryItem) => item.id === targetProjectId,
-      );
-      const nextActiveProjectId: string = storedProject
-        ? storedProject.id
-        : DEFAULT_PROJECT_ID;
-      const nextGraph: ProjectGraphResponse = storedProject
-        ? storedProject.graph
-        : defaultGraph;
-      setProjectLibrary(library);
-      setActiveProjectId(nextActiveProjectId);
-      writeActiveProjectId(nextActiveProjectId);
+      const catalog = await projectGraph.listProjectWorkspaces();
+      setProjects(catalog.projects);
+      const storedProjectId = readActiveProjectId();
+      const targetProjectId = catalog.projects.some(
+        (project) => project.id === storedProjectId,
+      )
+        ? storedProjectId
+        : catalog.defaultProjectId;
+      await loadGraph(targetProjectId, false);
+    } catch (loadError: unknown) {
+      setError(`项目目录加载失败：${getRequestErrorMessage(loadError)}`);
+      setLoading(false);
+    }
+  }
+
+  async function loadGraph(
+    projectId?: string,
+    manageLoading = true,
+  ): Promise<void> {
+    if (manageLoading) setLoading(true);
+    setError('');
+    try {
+      const targetProjectId = projectId || activeProjectId;
+      if (!targetProjectId) return;
+      const nextGraph = await projectGraph.getProjectGraph(targetProjectId);
+      setActiveProjectId(targetProjectId);
+      writeActiveProjectId(targetProjectId);
       setGraph({
         ...nextGraph,
         metrics: buildUiMetrics(nextGraph.nodes),
@@ -258,30 +264,15 @@ function ProjectGraphPage() {
         return exists ? currentId : (nextGraph.nodes[0]?.id ?? '');
       });
       setSelectedEdgeId('');
-    } catch {
-      setError('项目图谱数据加载失败');
+    } catch (loadError: unknown) {
+      setError(`项目图谱数据加载失败：${getRequestErrorMessage(loadError)}`);
     } finally {
       setLoading(false);
     }
   }
 
   function persistCurrentGraph(nextGraph: ProjectGraphResponse): void {
-    if (activeProjectId === DEFAULT_PROJECT_ID) {
-      if (nextGraph.base) {
-        return;
-      }
-      writeNodeEdits(nextGraph.nodes);
-      writeGraphDraft({ nodes: nextGraph.nodes, edges: nextGraph.edges });
-      return;
-    }
-
-    const nextLibrary: ProjectLibraryItem[] = upsertProjectGraph(
-      projectLibrary,
-      activeProjectId,
-      nextGraph,
-    );
-    writeProjectLibrary(nextLibrary);
-    setProjectLibrary(nextLibrary);
+    void nextGraph;
   }
 
   function updateSelectedNode(patch: Partial<EditableNodePatch>): void {
@@ -300,17 +291,13 @@ function ProjectGraphPage() {
         metrics: buildUiMetrics(nextNodes),
       };
       persistCurrentGraph(nextGraph);
-      if (isDefaultBaseGraph(nextGraph)) {
+      if (nextGraph.base) {
         queueBaseNodeSync(selectedId, patch as UpdateProjectGraphNodeRequest);
       } else {
         setSavedAt(formatSavedTime());
       }
       return nextGraph;
     });
-  }
-
-  function isDefaultBaseGraph(currentGraph: ProjectGraphResponse): boolean {
-    return activeProjectId === DEFAULT_PROJECT_ID && !!currentGraph.base;
   }
 
   function queueBaseNodeSync(
@@ -322,8 +309,15 @@ function ProjectGraphPage() {
     }
 
     window.clearTimeout(baseSyncTimersRef.current[nodeId]);
+    baseSyncPatchesRef.current[nodeId] = {
+      ...baseSyncPatchesRef.current[nodeId],
+      ...patch,
+    };
     baseSyncTimersRef.current[nodeId] = window.setTimeout(() => {
-      void syncBaseNode(nodeId, patch);
+      const pendingPatch = baseSyncPatchesRef.current[nodeId] ?? patch;
+      delete baseSyncPatchesRef.current[nodeId];
+      delete baseSyncTimersRef.current[nodeId];
+      void syncBaseNode(nodeId, pendingPatch);
     }, 500);
   }
 
@@ -333,7 +327,7 @@ function ProjectGraphPage() {
   ): Promise<void> {
     try {
       const syncedGraph: ProjectGraphResponse =
-        await projectGraph.updateProjectNode(nodeId, patch);
+        await projectGraph.updateProjectNode(nodeId, patch, activeProjectId);
       if (!syncedGraph.writable) {
         setSavedAt('该字段未写回 Base');
         return;
@@ -394,6 +388,7 @@ function ProjectGraphPage() {
       const creation: CreateProjectGraphNodeResponse =
         await projectGraph.createProjectNode(
           payload as CreateProjectGraphNodeRequest,
+          activeProjectId,
         );
       setGraph((currentGraph: ProjectGraphResponse | null) => {
         if (!currentGraph) {
@@ -406,13 +401,15 @@ function ProjectGraphPage() {
         const nextEdges: ProjectGraphEdge[] = currentGraph.edges.map(
           (edge: ProjectGraphEdge) => {
             if (optimisticEdge && edge.id === optimisticEdge.id) {
-              return creation.edge ?? {
-                ...edge,
-                source:
-                  edge.source === node.id ? creation.node.id : edge.source,
-                target:
-                  edge.target === node.id ? creation.node.id : edge.target,
-              };
+              return (
+                creation.edge ?? {
+                  ...edge,
+                  source:
+                    edge.source === node.id ? creation.node.id : edge.source,
+                  target:
+                    edge.target === node.id ? creation.node.id : edge.target,
+                }
+              );
             }
             return {
               ...edge,
@@ -468,7 +465,7 @@ function ProjectGraphPage() {
     previousSelectedId: string,
   ): Promise<void> {
     try {
-      await projectGraph.deleteProjectNode(nodeId);
+      await projectGraph.deleteProjectNode(nodeId, activeProjectId);
       setSavedAt(`已删除节点并写回 Base ${formatSavedTime()}`);
       setError('');
     } catch (requestError: unknown) {
@@ -487,6 +484,7 @@ function ProjectGraphPage() {
       const nextGraph: ProjectGraphResponse =
         await projectGraph.createProjectEdge(
           payload as CreateProjectGraphEdgeRequest,
+          activeProjectId,
         );
       applyServerGraph(nextGraph);
     } catch {
@@ -500,7 +498,7 @@ function ProjectGraphPage() {
   ): Promise<void> {
     try {
       const nextGraph: ProjectGraphResponse =
-        await projectGraph.updateProjectEdge(edgeId, patch);
+        await projectGraph.updateProjectEdge(edgeId, patch, activeProjectId);
       applyServerGraph(nextGraph);
     } catch {
       setError('Base 连线更新失败：请确认已登录且对该多维表格有编辑权限');
@@ -510,7 +508,7 @@ function ProjectGraphPage() {
   async function removeBaseEdge(edgeId: string): Promise<void> {
     try {
       const nextGraph: ProjectGraphResponse =
-        await projectGraph.deleteProjectEdge(edgeId);
+        await projectGraph.deleteProjectEdge(edgeId, activeProjectId);
       applyServerGraph(nextGraph);
     } catch {
       setError('Base 连线删除失败：请确认已登录且对该多维表格有编辑权限');
@@ -518,7 +516,7 @@ function ProjectGraphPage() {
   }
 
   function addNode(lane: ProjectLane, parentId: string | null): void {
-    if (graph && isDefaultBaseGraph(graph)) {
+    if (graph?.base) {
       const nextNode: ProjectGraphNode = createDefaultNode(
         lane,
         parentId,
@@ -602,7 +600,7 @@ function ProjectGraphPage() {
   }
 
   function deleteNode(nodeId: string): void {
-    if (graph && isDefaultBaseGraph(graph)) {
+    if (graph?.base) {
       if (deletingNodeRef.current || creatingNodeRef.current) {
         return;
       }
@@ -664,7 +662,7 @@ function ProjectGraphPage() {
     targetId: string,
     label: string,
   ): void {
-    if (graph && isDefaultBaseGraph(graph)) {
+    if (graph?.base) {
       void writeBaseEdge(createEdge(sourceId, targetId, label));
       return;
     }
@@ -700,7 +698,7 @@ function ProjectGraphPage() {
   }
 
   function addTreeEdge(targetId: string, label: string): void {
-    if (graph && isDefaultBaseGraph(graph)) {
+    if (graph?.base) {
       void writeBaseEdge(createEdge(selectedId, targetId, label));
       return;
     }
@@ -751,7 +749,7 @@ function ProjectGraphPage() {
     edgeId: string,
     patch: Partial<Pick<ProjectGraphEdge, 'label' | 'critical'>>,
   ): void {
-    if (graph && isDefaultBaseGraph(graph)) {
+    if (graph?.base) {
       void patchBaseEdge(edgeId, patch);
       return;
     }
@@ -777,7 +775,7 @@ function ProjectGraphPage() {
   }
 
   function deleteEdge(edgeId: string): void {
-    if (graph && isDefaultBaseGraph(graph)) {
+    if (graph?.base) {
       void removeBaseEdge(edgeId);
       return;
     }
@@ -819,13 +817,8 @@ function ProjectGraphPage() {
   }
 
   function resetLocalEdits(): void {
-    if (activeProjectId !== DEFAULT_PROJECT_ID) {
-      setSavedAt('当前项目已自动保存');
-      return;
-    }
-    clearNodeEdits();
     setSavedAt('');
-    void loadGraph(DEFAULT_PROJECT_ID);
+    void loadGraph(activeProjectId);
   }
 
   function switchProject(projectId: string): void {
@@ -835,74 +828,42 @@ function ProjectGraphPage() {
     void loadGraph(projectId);
   }
 
-  function createProjectFromCurrent(): void {
-    if (!graph) {
-      return;
-    }
-
-    const currentName: string =
-      activeProjectId === DEFAULT_PROJECT_ID
-        ? '默认头戴项目'
-        : (projectLibrary.find(
-            (item: ProjectLibraryItem) => item.id === activeProjectId,
-          )?.name ?? '未命名项目');
-    const projectName: string = `${currentName} 副本`;
-    const item: ProjectLibraryItem = createProjectLibraryItem(
-      projectName,
-      graph,
-    );
-    const nextLibrary: ProjectLibraryItem[] = [...projectLibrary, item];
-    writeProjectLibrary(nextLibrary);
-    writeActiveProjectId(item.id);
-    setProjectLibrary(nextLibrary);
-    setActiveProjectId(item.id);
-    setGraph(item.graph);
-    setSelectedId(item.graph.nodes[0]?.id ?? '');
-    setSelectedEdgeId('');
-    setSavedAt(formatSavedTime());
+  function openProjectDialog(mode: 'shared-base' | 'linked-base'): void {
+    setProjectForm({
+      name: '',
+      description: '',
+      parentId: activeProjectId,
+      baseUrl: '',
+      nodeTableId: '',
+      edgeTableId: '',
+    });
+    setProjectDialogMode(mode);
+    setError('');
   }
 
-  async function importProjectFile(
-    event: React.ChangeEvent<HTMLInputElement>,
-  ): Promise<void> {
-    const file: File | undefined = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) {
-      return;
-    }
-
+  async function submitProjectForm(): Promise<void> {
+    if (!projectDialogMode || creatingProject) return;
+    setCreatingProject(true);
     try {
-      const fileText: string = await file.text();
-      const parsedValue: unknown = JSON.parse(fileText);
-      const importedGraph: ProjectGraphResponse | null =
-        normalizeImportedProject(parsedValue, graph, file.name);
-      if (!importedGraph) {
-        setError('导入失败：文件不是有效的项目图谱 JSON');
-        return;
-      }
-
-      const importedName: string =
-        activeProjectId === DEFAULT_PROJECT_ID
-          ? '导入项目'
-          : (projectLibrary.find(
-              (item: ProjectLibraryItem) => item.id === activeProjectId,
-            )?.name ?? '导入项目');
-      const item: ProjectLibraryItem = createProjectLibraryItem(
-        importedName,
-        importedGraph,
-      );
-      const nextLibrary: ProjectLibraryItem[] = [...projectLibrary, item];
-      writeProjectLibrary(nextLibrary);
-      writeActiveProjectId(item.id);
-      setProjectLibrary(nextLibrary);
-      setActiveProjectId(item.id);
-      setGraph(item.graph);
-      setSelectedId(item.graph.nodes[0]?.id ?? '');
-      setSelectedEdgeId('');
-      setSavedAt(formatSavedTime());
+      const request: CreateProjectWorkspaceRequest = {
+        name: projectForm.name,
+        description: projectForm.description,
+        parentId: projectForm.parentId || undefined,
+        source: projectDialogMode,
+        baseUrl: projectForm.baseUrl || undefined,
+        nodeTableId: projectForm.nodeTableId || undefined,
+        edgeTableId: projectForm.edgeTableId || undefined,
+      };
+      const project = await projectGraph.createProjectWorkspace(request);
+      setProjects((current) => [...current, project]);
+      setProjectDialogMode(null);
+      await loadGraph(project.id);
+      setSavedAt(`项目“${project.name}”已加入目录`);
       setError('');
-    } catch {
-      setError('导入失败：JSON 文件无法解析');
+    } catch (requestError: unknown) {
+      setError(`项目创建失败：${getRequestErrorMessage(requestError)}`);
+    } finally {
+      setCreatingProject(false);
     }
   }
 
@@ -912,11 +873,7 @@ function ProjectGraphPage() {
     }
 
     const exportName: string =
-      activeProjectId === DEFAULT_PROJECT_ID
-        ? '默认头戴项目'
-        : (projectLibrary.find(
-            (item: ProjectLibraryItem) => item.id === activeProjectId,
-          )?.name ?? '项目图谱');
+      projects.find((item) => item.id === activeProjectId)?.name ?? '项目图谱';
     const fileName: string = `${exportName}.json`;
     const blob: Blob = new Blob([JSON.stringify(graph, null, 2)], {
       type: 'application/json',
@@ -958,6 +915,11 @@ function ProjectGraphPage() {
     );
   }, [graph, selectedEdgeId]);
 
+  const activeProject = projects.find(
+    (project) => project.id === activeProjectId,
+  );
+  const projectRows = useMemo(() => buildProjectTreeRows(projects), [projects]);
+
   if (loading && !graph) {
     return (
       <main className="graph-shell loading-shell">
@@ -981,195 +943,357 @@ function ProjectGraphPage() {
   }
 
   return (
-    <main className="graph-shell">
-      <section className="graph-header">
-        <div>
-          <div className="eyebrow">
-            <GitBranch />
-            硬件主干 / 软件分支
+    <main className="graph-shell project-shell">
+      <aside className="project-navigation">
+        <div className="project-navigation-title">
+          <div>
+            <span>项目工作台</span>
+            <strong>飞书项目目录</strong>
           </div>
-          <h1>
-            {activeProjectId === DEFAULT_PROJECT_ID
-              ? '默认头戴项目'
-              : (projectLibrary.find(
-                  (item: ProjectLibraryItem) => item.id === activeProjectId,
-                )?.name ?? '未命名项目')}
-          </h1>
-          <p>
-            横向跟踪慢节奏硬件版本，纵向展开每个硬件版本下的软件算法、
-            联调测试和风险闭环。
-          </p>
+          <Badge variant="outline">{projects.length}</Badge>
         </div>
-        <div className="header-actions">
-          <div className="project-switcher">
-            <FolderOpen />
-            <select
-              aria-label="切换项目"
-              onChange={(event: React.ChangeEvent<HTMLSelectElement>) =>
-                switchProject(event.target.value)
-              }
-              value={activeProjectId}
-            >
-              <option value={DEFAULT_PROJECT_ID}>默认头戴项目</option>
-              {projectLibrary.map((item: ProjectLibraryItem) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <Button onClick={createProjectFromCurrent} variant="outline">
+        <div className="project-navigation-actions">
+          <Button onClick={() => openProjectDialog('shared-base')} size="sm">
             <Plus />
             新建项目
           </Button>
-          <Button asChild variant="outline">
-            <label className="file-import-button">
-              <Upload />
-              导入项目
-              <input
-                accept="application/json,.json"
-                onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                  void importProjectFile(event)
-                }
-                type="file"
-              />
-            </label>
-          </Button>
-          <Button onClick={exportCurrentProject} variant="outline">
-            <Download />
-            导出
-          </Button>
-          <Button onClick={() => void loadGraph()} variant="outline">
-            <RefreshCw />
-            刷新
-          </Button>
-          <Button onClick={resetLocalEdits} variant="outline">
-            <RotateCcw />
-            恢复默认
-          </Button>
-          <Button asChild>
-            <UniversalLink
-              to={graph.base?.url ?? '#'}
-              rel="noreferrer"
-              target="_blank"
-            >
-              <ArrowUpRight />
-              打开 Base
-            </UniversalLink>
+          <Button
+            onClick={() => openProjectDialog('linked-base')}
+            size="sm"
+            variant="outline"
+          >
+            <Upload />
+            从飞书导入
           </Button>
         </div>
-      </section>
-
-      {error ? <div className="graph-alert">{error}</div> : null}
-      {graph.message || graph.base ? (
-        <div
-          className={`data-source-banner source-${graph.base ? 'base' : 'static'}`}
-        >
-          <div>
-            <strong>{graph.base ? 'Base 多维表格' : '本地静态数据'}</strong>
-            <span>{graph.base ? '多维表格作为数据库' : '后端静态兆底'}</span>
-          </div>
-          {graph.message ? <p>{graph.message}</p> : null}
-          <Badge variant="outline">
-            {graph.writable ? '可写回' : '只读显示'}
-          </Badge>
-        </div>
-      ) : null}
-
-      <section className="metric-strip">
-        {graph.metrics.map((metric: ProjectMetric) => {
-          const MetricIcon = METRIC_ICON[metric.tone];
-          return (
-            <div className={`metric-tile tone-${metric.tone}`} key={metric.key}>
-              <MetricIcon />
-              <div>
-                <span>{metric.label}</span>
-                <strong>{metric.value}</strong>
-              </div>
-            </div>
-          );
-        })}
-      </section>
-
-      <section className="graph-workspace">
-        <div className="graph-main-panel">
-          <div className="graph-toolbar">
-            <div className="search-box">
-              <Search />
-              <Input
-                aria-label="搜索节点"
-                onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                  setQuery(event.target.value)
-                }
-                placeholder="搜索版本、负责人、工作内容、标签"
-                value={query}
-              />
-            </div>
-            <SegmentedControl<ProjectLane | 'all'>
-              label="类型"
-              onChange={setLaneFilter}
-              options={laneOptions}
-              renderLabel={(value: ProjectLane | 'all') => LANE_LABELS[value]}
-              value={laneFilter}
-            />
-            <SegmentedControl<ProjectNodeStatus | 'all'>
-              label="状态"
-              onChange={setStatusFilter}
-              options={statusOptions}
-              renderLabel={(value: ProjectNodeStatus | 'all') =>
-                STATUS_LABELS[value]
-              }
-              value={statusFilter}
-            />
+        <nav className="project-tree" aria-label="项目层次">
+          {projectRows.map(({ project, depth }) => (
             <button
               className={
-                compactMode ? 'compact-toggle active' : 'compact-toggle'
+                project.id === activeProjectId
+                  ? 'project-tree-item active'
+                  : 'project-tree-item'
               }
-              onClick={() => setCompactMode((current: boolean) => !current)}
+              key={project.id}
+              onClick={() => switchProject(project.id)}
+              style={{ paddingLeft: 14 + depth * 18 }}
               type="button"
             >
-              简洁模式
+              <FolderOpen />
+              <span>
+                <strong>{project.name}</strong>
+                <small>
+                  {project.source === 'linked-base'
+                    ? '独立 Base'
+                    : '共享 Base 项目空间'}
+                </small>
+              </span>
             </button>
+          ))}
+        </nav>
+      </aside>
+
+      <div className="project-content">
+        <section className="graph-header">
+          <div>
+            <div className="eyebrow">
+              <GitBranch />
+              硬件主干 / 软件分支
+            </div>
+            <h1>{activeProject?.name ?? '未命名项目'}</h1>
+            <p>
+              横向跟踪慢节奏硬件版本，纵向展开每个硬件版本下的软件算法、
+              联调测试和风险闭环。
+            </p>
+          </div>
+          <div className="header-actions">
+            <Button onClick={exportCurrentProject} variant="outline">
+              <Download />
+              导出
+            </Button>
+            <Button onClick={() => void loadGraph()} variant="outline">
+              <RefreshCw />
+              刷新
+            </Button>
+            <Button onClick={resetLocalEdits} variant="outline">
+              <RotateCcw />
+              恢复默认
+            </Button>
+            <Button asChild>
+              <UniversalLink
+                to={graph.base?.url ?? '#'}
+                rel="noreferrer"
+                target="_blank"
+              >
+                <ArrowUpRight />
+                打开 Base
+              </UniversalLink>
+            </Button>
+          </div>
+        </section>
+
+        {error ? <div className="graph-alert">{error}</div> : null}
+        {graph.message || graph.base ? (
+          <div
+            className={`data-source-banner source-${graph.base ? 'base' : 'static'}`}
+          >
+            <div>
+              <strong>{graph.base ? 'Base 多维表格' : '本地静态数据'}</strong>
+              <span>{graph.base ? '多维表格作为数据库' : '后端静态兆底'}</span>
+            </div>
+            {graph.message ? <p>{graph.message}</p> : null}
+            <Badge variant="outline">
+              {graph.writable ? '可写回' : '只读显示'}
+            </Badge>
+          </div>
+        ) : null}
+
+        <section className="metric-strip">
+          {graph.metrics.map((metric: ProjectMetric) => {
+            const MetricIcon = METRIC_ICON[metric.tone];
+            return (
+              <div
+                className={`metric-tile tone-${metric.tone}`}
+                key={metric.key}
+              >
+                <MetricIcon />
+                <div>
+                  <span>{metric.label}</span>
+                  <strong>{metric.value}</strong>
+                </div>
+              </div>
+            );
+          })}
+        </section>
+
+        <section className="graph-workspace">
+          <div className="graph-main-panel">
+            <div className="graph-toolbar">
+              <div className="search-box">
+                <Search />
+                <Input
+                  aria-label="搜索节点"
+                  onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+                    setQuery(event.target.value)
+                  }
+                  placeholder="搜索版本、负责人、工作内容、标签"
+                  value={query}
+                />
+              </div>
+              <SegmentedControl<ProjectLane | 'all'>
+                label="类型"
+                onChange={setLaneFilter}
+                options={laneOptions}
+                renderLabel={(value: ProjectLane | 'all') => LANE_LABELS[value]}
+                value={laneFilter}
+              />
+              <SegmentedControl<ProjectNodeStatus | 'all'>
+                label="状态"
+                onChange={setStatusFilter}
+                options={statusOptions}
+                renderLabel={(value: ProjectNodeStatus | 'all') =>
+                  STATUS_LABELS[value]
+                }
+                value={statusFilter}
+              />
+              <button
+                className={
+                  compactMode ? 'compact-toggle active' : 'compact-toggle'
+                }
+                onClick={() => setCompactMode((current: boolean) => !current)}
+                type="button"
+              >
+                简洁模式
+              </button>
+            </div>
+
+            <GraphCanvas
+              creatingNode={creatingNode}
+              layout={graphLayout}
+              onAddChild={addChildNode}
+              onConnectNodes={addConnectionEdge}
+              onDeleteEdge={deleteEdge}
+              onDeleteNode={deleteNode}
+              onSelectEdge={setSelectedEdgeId}
+              onSelect={setSelectedId}
+              selectedEdgeId={selectedEdgeId}
+              selectedId={selectedId}
+            />
           </div>
 
-          <GraphCanvas
-            creatingNode={creatingNode}
-            layout={graphLayout}
-            onAddChild={addChildNode}
-            onConnectNodes={addConnectionEdge}
-            onDeleteEdge={deleteEdge}
-            onDeleteNode={deleteNode}
-            onSelectEdge={setSelectedEdgeId}
-            onSelect={setSelectedId}
-            selectedEdgeId={selectedEdgeId}
-            selectedId={selectedId}
-          />
-        </div>
-
-        <aside className="graph-side-panel">
-          {selectedNode ? (
-            <NodeEditor
-              isBaseBacked={isDefaultBaseGraph(graph)}
-              node={selectedNode}
-              onUpdate={updateSelectedNode}
-              savedAt={savedAt}
+          <aside className="graph-side-panel">
+            {selectedNode ? (
+              <NodeEditor
+                isBaseBacked={Boolean(graph.base)}
+                node={selectedNode}
+                onUpdate={updateSelectedNode}
+                savedAt={savedAt}
+              />
+            ) : null}
+            <FlowEditor
+              creatingNode={creatingNode}
+              edges={graph.edges}
+              nodes={graph.nodes}
+              onAddNode={addNode}
+              onAddTreeEdge={addEdge}
+              onDeleteEdge={deleteEdge}
+              onDeleteNode={deleteNode}
+              onUpdateEdge={updateEdge}
+              selectedEdge={selectedEdge}
+              selectedId={selectedId}
             />
-          ) : null}
-          <FlowEditor
-            creatingNode={creatingNode}
-            edges={graph.edges}
-            nodes={graph.nodes}
-            onAddNode={addNode}
-            onAddTreeEdge={addEdge}
-            onDeleteEdge={deleteEdge}
-            onDeleteNode={deleteNode}
-            onUpdateEdge={updateEdge}
-            selectedEdge={selectedEdge}
-            selectedId={selectedId}
-          />
-          <BaselineList baselines={graph.baselines} />
-        </aside>
-      </section>
+            <BaselineList baselines={graph.baselines} />
+          </aside>
+        </section>
+      </div>
+
+      {projectDialogMode ? (
+        <div className="project-dialog-backdrop" role="presentation">
+          <section
+            aria-labelledby="project-dialog-title"
+            aria-modal="true"
+            className="project-dialog"
+            role="dialog"
+          >
+            <div className="project-dialog-heading">
+              <div>
+                <span>
+                  {projectDialogMode === 'linked-base'
+                    ? '从飞书导入'
+                    : '新建项目'}
+                </span>
+                <h2 id="project-dialog-title">
+                  {projectDialogMode === 'linked-base'
+                    ? '绑定已有项目 Base'
+                    : '创建共享 Base 项目空间'}
+                </h2>
+              </div>
+              <button onClick={() => setProjectDialogMode(null)} type="button">
+                ×
+              </button>
+            </div>
+            <label className="field-stack">
+              <span>项目名称</span>
+              <Input
+                onChange={(event) =>
+                  setProjectForm((current) => ({
+                    ...current,
+                    name: event.target.value,
+                  }))
+                }
+                placeholder="例如：机器人视觉平台"
+                value={projectForm.name}
+              />
+            </label>
+            <label className="field-stack">
+              <span>上级项目</span>
+              <select
+                className="editor-select"
+                onChange={(event) =>
+                  setProjectForm((current) => ({
+                    ...current,
+                    parentId: event.target.value,
+                  }))
+                }
+                value={projectForm.parentId}
+              >
+                <option value="">作为一级项目</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field-stack">
+              <span>项目说明</span>
+              <Textarea
+                onChange={(event) =>
+                  setProjectForm((current) => ({
+                    ...current,
+                    description: event.target.value,
+                  }))
+                }
+                placeholder="项目目标、范围或数据来源"
+                value={projectForm.description}
+              />
+            </label>
+            {projectDialogMode === 'linked-base' ? (
+              <div className="project-dialog-base-fields">
+                <label className="field-stack">
+                  <span>飞书 Base 链接</span>
+                  <Input
+                    onChange={(event) =>
+                      setProjectForm((current) => ({
+                        ...current,
+                        baseUrl: event.target.value,
+                      }))
+                    }
+                    placeholder="https://...feishu.cn/base/...?...table=tbl..."
+                    value={projectForm.baseUrl}
+                  />
+                </label>
+                <div className="project-dialog-table-grid">
+                  <label className="field-stack">
+                    <span>节点表 ID</span>
+                    <Input
+                      onChange={(event) =>
+                        setProjectForm((current) => ({
+                          ...current,
+                          nodeTableId: event.target.value,
+                        }))
+                      }
+                      placeholder="可从链接自动识别"
+                      value={projectForm.nodeTableId}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>关系表 ID</span>
+                    <Input
+                      onChange={(event) =>
+                        setProjectForm((current) => ({
+                          ...current,
+                          edgeTableId: event.target.value,
+                        }))
+                      }
+                      placeholder="tbl..."
+                      value={projectForm.edgeTableId}
+                    />
+                  </label>
+                </div>
+                <p>
+                  导入前会验证节点表和关系表的读取权限，不会修改源 Base 数据。
+                  目标 Base 需要包含与当前模板一致的节点字段和关系字段。
+                </p>
+              </div>
+            ) : (
+              <p className="project-dialog-note">
+                新项目会登记到飞书“项目”表，并在当前 Base 中建立独立项目空间。
+              </p>
+            )}
+            <div className="project-dialog-actions">
+              <Button
+                onClick={() => setProjectDialogMode(null)}
+                variant="outline"
+              >
+                取消
+              </Button>
+              <Button
+                disabled={
+                  creatingProject ||
+                  !projectForm.name.trim() ||
+                  (projectDialogMode === 'linked-base' &&
+                    (!projectForm.baseUrl.trim() ||
+                      !projectForm.edgeTableId.trim()))
+                }
+                onClick={() => void submitProjectForm()}
+              >
+                {creatingProject ? '正在创建…' : '确认添加'}
+              </Button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -1461,7 +1585,9 @@ function GraphCanvas({
               <span className="node-kind">{LANE_LABELS[node.lane]}</span>
               <strong>{node.title}</strong>
               <small>{node.subtitle}</small>
-              <span className="node-owner">{node.owner?.name || '待指定'}</span>
+              <span className="node-owner">
+                {node.owners.map((owner) => owner.name).join(' / ') || '待指定'}
+              </span>
             </span>
             <button
               aria-label={`从 ${node.title} 拖拽建立连接`}
@@ -1750,11 +1876,12 @@ function NodeEditor({
           <span>负责人</span>
           <UserSelect
             accountType="apaas"
-            onChange={(user: User | null) =>
-              onUpdate({ owner: userToProjectOwner(user) })
+            multiple
+            onChange={(users: User[]) =>
+              onUpdate({ owners: usersToProjectOwners(users) })
             }
-            placeholder="请选择负责人"
-            value={projectOwnerToUser(node.owner)}
+            placeholder="请选择一位或多位负责人"
+            value={projectOwnersToUsers(node.owners)}
             valueType="object"
           />
         </label>
@@ -2106,6 +2233,46 @@ function BaselineList({ baselines }: BaselineListProps) {
       ))}
     </section>
   );
+}
+
+interface ProjectTreeRow {
+  project: ProjectWorkspace;
+  depth: number;
+}
+
+function buildProjectTreeRows(projects: ProjectWorkspace[]): ProjectTreeRow[] {
+  const projectIds = new Set(projects.map((project) => project.id));
+  const children = new Map<string, ProjectWorkspace[]>();
+  projects.forEach((project) => {
+    const parentId =
+      project.parentId && projectIds.has(project.parentId)
+        ? project.parentId
+        : '';
+    const list = children.get(parentId) ?? [];
+    list.push(project);
+    children.set(parentId, list);
+  });
+  children.forEach((list) =>
+    list.sort(
+      (left, right) =>
+        left.sort - right.sort || left.name.localeCompare(right.name),
+    ),
+  );
+  const rows: ProjectTreeRow[] = [];
+  const visited = new Set<string>();
+  const visit = (parentId: string, depth: number) => {
+    (children.get(parentId) ?? []).forEach((project) => {
+      if (visited.has(project.id)) return;
+      visited.add(project.id);
+      rows.push({ project, depth });
+      visit(project.id, depth + 1);
+    });
+  };
+  visit('', 0);
+  projects.forEach((project) => {
+    if (!visited.has(project.id)) rows.push({ project, depth: 0 });
+  });
+  return rows;
 }
 
 function formatSavedTime(): string {

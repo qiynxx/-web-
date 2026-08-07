@@ -4,17 +4,46 @@ import type {
   CreateProjectGraphNodeResponse,
   CreateProjectGraphEdgeRequest,
   CreateProjectGraphNodeRequest,
+  CreateProjectWorkspaceRequest,
   DeleteProjectGraphNodeResponse,
   ProjectGraphResponse,
+  ProjectWorkspace,
+  ProjectWorkspaceListResponse,
   UpdateProjectGraphEdgeRequest,
   UpdateProjectGraphNodeRequest,
 } from '@shared/api.interface';
 
-export async function getProjectGraph(): Promise<ProjectGraphResponse> {
+function projectParams(projectId?: string): { projectId?: string } {
+  return projectId ? { projectId } : {};
+}
+
+export async function listProjectWorkspaces(): Promise<ProjectWorkspaceListResponse> {
+  const response = await axiosForBackend({
+    url: '/api/project-graph/projects',
+    method: 'GET',
+  });
+  return response.data as ProjectWorkspaceListResponse;
+}
+
+export async function createProjectWorkspace(
+  request: CreateProjectWorkspaceRequest,
+): Promise<ProjectWorkspace> {
+  const response = await axiosForBackend({
+    url: '/api/project-graph/projects',
+    method: 'POST',
+    data: request,
+  });
+  return response.data as ProjectWorkspace;
+}
+
+export async function getProjectGraph(
+  projectId?: string,
+): Promise<ProjectGraphResponse> {
   try {
     const response = await axiosForBackend({
       url: '/api/project-graph',
       method: 'GET',
+      params: projectParams(projectId),
     });
     return response.data as ProjectGraphResponse;
   } catch (error: unknown) {
@@ -26,12 +55,14 @@ export async function getProjectGraph(): Promise<ProjectGraphResponse> {
 export async function updateProjectNode(
   nodeId: string,
   patch: UpdateProjectGraphNodeRequest,
+  projectId?: string,
 ): Promise<ProjectGraphResponse> {
   try {
     const response = await axiosForBackend({
       url: `/api/project-graph/nodes/${nodeId}`,
       method: 'PATCH',
       data: patch,
+      params: projectParams(projectId),
     });
     return response.data as ProjectGraphResponse;
   } catch (error: unknown) {
@@ -42,12 +73,14 @@ export async function updateProjectNode(
 
 export async function createProjectNode(
   node: CreateProjectGraphNodeRequest,
+  projectId?: string,
 ): Promise<CreateProjectGraphNodeResponse> {
   try {
     const response = await axiosForBackend({
       url: '/api/project-graph/nodes',
       method: 'POST',
       data: node,
+      params: projectParams(projectId),
     });
     return response.data as CreateProjectGraphNodeResponse;
   } catch (error: unknown) {
@@ -58,11 +91,13 @@ export async function createProjectNode(
 
 export async function deleteProjectNode(
   nodeId: string,
+  projectId?: string,
 ): Promise<DeleteProjectGraphNodeResponse> {
   try {
     const response = await axiosForBackend({
       url: `/api/project-graph/nodes/${nodeId}`,
       method: 'DELETE',
+      params: projectParams(projectId),
     });
     return response.data as DeleteProjectGraphNodeResponse;
   } catch (error: unknown) {
@@ -73,12 +108,14 @@ export async function deleteProjectNode(
 
 export async function createProjectEdge(
   edge: CreateProjectGraphEdgeRequest,
+  projectId?: string,
 ): Promise<ProjectGraphResponse> {
   try {
     const response = await axiosForBackend({
       url: '/api/project-graph/edges',
       method: 'POST',
       data: edge,
+      params: projectParams(projectId),
     });
     return response.data as ProjectGraphResponse;
   } catch (error: unknown) {
@@ -90,12 +127,14 @@ export async function createProjectEdge(
 export async function updateProjectEdge(
   edgeId: string,
   patch: UpdateProjectGraphEdgeRequest,
+  projectId?: string,
 ): Promise<ProjectGraphResponse> {
   try {
     const response = await axiosForBackend({
       url: `/api/project-graph/edges/${edgeId}`,
       method: 'PATCH',
       data: patch,
+      params: projectParams(projectId),
     });
     return response.data as ProjectGraphResponse;
   } catch (error: unknown) {
@@ -106,11 +145,13 @@ export async function updateProjectEdge(
 
 export async function deleteProjectEdge(
   edgeId: string,
+  projectId?: string,
 ): Promise<ProjectGraphResponse> {
   try {
     const response = await axiosForBackend({
       url: `/api/project-graph/edges/${edgeId}`,
       method: 'DELETE',
+      params: projectParams(projectId),
     });
     return response.data as ProjectGraphResponse;
   } catch (error: unknown) {

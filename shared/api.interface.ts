@@ -36,7 +36,7 @@ export interface ProjectGraphNode {
   lane: ProjectLane;
   kind: ProjectNodeKind;
   status: ProjectNodeStatus;
-  owner: ProjectOwner | null;
+  owners: ProjectOwner[];
   progress: number;
   version: string;
   date: string;
@@ -108,7 +108,7 @@ export type UpdateProjectGraphNodeRequest = Partial<
     | 'title'
     | 'subtitle'
     | 'status'
-    | 'owner'
+    | 'owners'
     | 'progress'
     | 'version'
     | 'date'
@@ -125,6 +125,38 @@ export interface BaseLinkConfig {
   baseToken: string;
   nodeTableId: string;
   edgeTableId: string;
+  url?: string;
+}
+
+export type ProjectWorkspaceSource = 'shared-base' | 'linked-base';
+
+export interface ProjectWorkspace {
+  id: string;
+  code: string;
+  name: string;
+  description: string;
+  status: 'planned' | 'active' | 'paused' | 'archived';
+  parentId?: string;
+  sort: number;
+  source: ProjectWorkspaceSource;
+  base: BaseLinkConfig;
+  writable: boolean;
+  updatedAt?: string;
+}
+
+export interface ProjectWorkspaceListResponse {
+  projects: ProjectWorkspace[];
+  defaultProjectId: string;
+}
+
+export interface CreateProjectWorkspaceRequest {
+  name: string;
+  description?: string;
+  parentId?: string;
+  source: ProjectWorkspaceSource;
+  baseUrl?: string;
+  nodeTableId?: string;
+  edgeTableId?: string;
 }
 
 export type CreateProjectGraphNodeRequest = Omit<

@@ -5,21 +5,28 @@
   "name": "项目图谱连线表多维表格CRUD操作",
   "description": "用于项目图谱连线表的数据读写操作，支持连接名称、连接ID、连接类型等字段的增删改查。",
   "icon": "",
-  "paramsSchema": {},
+  "paramsSchema": {
+    "type": "object",
+    "properties": {
+      "baseToken": { "type": "string" },
+      "tableId": { "type": "string" }
+    },
+    "required": ["baseToken", "tableId"]
+  },
   "formValue": {
-    "appToken": "WC3cb3acOaminMsXKbTcwPKdnMg",
-    "tableID": "tblFSCyy1hjLEFO5",
+    "appToken": "{{input.baseToken}}",
+    "tableID": "{{input.tableId}}",
     "fields": [
       {
         "type": 1,
         "bizType": "Text",
         "readable": true,
         "writeable": true,
-        "id": "fld1",
+        "id": "fldg10KKm3",
         "name": "连接名称"
       },
       {
-        "id": "fld2",
+        "id": "fldJtbIQSO",
         "name": "连接ID",
         "type": 1,
         "bizType": "Text",
@@ -31,7 +38,7 @@
         "readable": true,
         "writeable": true,
         "enumValues": [],
-        "id": "fld3",
+        "id": "fldTVJNf1R",
         "name": "连接类型",
         "type": 3
       },
@@ -40,7 +47,7 @@
         "bizType": "Text",
         "readable": true,
         "writeable": true,
-        "id": "fld4",
+        "id": "fld5hxxFeS",
         "name": "标签"
       },
       {
@@ -49,34 +56,34 @@
         "bizType": "Checkbox",
         "readable": true,
         "writeable": true,
-        "id": "fld5"
+        "id": "fldNqNzldm"
       },
       {
         "writeable": true,
-        "id": "fld6",
+        "id": "fld3vd6RTg",
         "name": "排序",
         "type": 2,
         "bizType": "Number",
         "readable": true
       },
       {
-        "id": "fld7",
+        "id": "flddx3dLJH",
         "name": "所属项目",
-        "type": 1,
-        "bizType": "Text",
+        "type": 15,
+        "bizType": "SingleLink",
         "readable": true,
         "writeable": true
       },
       {
         "readable": true,
         "writeable": true,
-        "id": "fld8",
+        "id": "fldY88Vpxd",
         "name": "来源节点",
         "type": 15,
         "bizType": "SingleLink"
       },
       {
-        "id": "fld9",
+        "id": "fldTMFv78F",
         "name": "目标节点",
         "type": 15,
         "bizType": "SingleLink",

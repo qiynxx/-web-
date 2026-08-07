@@ -5,17 +5,24 @@
   "name": "项目图谱节点表CRUD操作",
   "description": "用于项目图谱节点表的数据读写操作，支持节点的创建、查询、更新、删除等功能",
   "icon": "",
-  "paramsSchema": {},
+  "paramsSchema": {
+    "type": "object",
+    "properties": {
+      "baseToken": { "type": "string" },
+      "tableId": { "type": "string" }
+    },
+    "required": ["baseToken", "tableId"]
+  },
   "formValue": {
-    "appToken": "WC3cb3acOaminMsXKbTcwPKdnMg",
-    "tableID": "tblVIjVsxIbuk1QQ",
+    "appToken": "{{input.baseToken}}",
+    "tableID": "{{input.tableId}}",
     "fields": [
       {
         "readable": true,
         "type": 1,
         "writeable": true,
         "bizType": "Text",
-        "id": "fld_node_name",
+        "id": "fldhgfY0rf",
         "name": "节点名称"
       },
       {
@@ -24,7 +31,7 @@
         "type": 1,
         "writeable": true,
         "bizType": "Text",
-        "id": "fld_node_id"
+        "id": "fldoBqrpaR"
       },
       {
         "name": "副标题",
@@ -32,11 +39,11 @@
         "type": 1,
         "writeable": true,
         "bizType": "Text",
-        "id": "fld_subtitle"
+        "id": "fld0darEVC"
       },
       {
         "bizType": "SingleSelect",
-        "id": "fld_group",
+        "id": "fldCXul78Y",
         "name": "分组",
         "readable": true,
         "type": 3,
@@ -50,13 +57,13 @@
         "writeable": true,
         "enumValues": [],
         "bizType": "SingleSelect",
-        "id": "fld_node_type"
+        "id": "fldsIkRBlw"
       },
       {
         "writeable": true,
         "enumValues": [],
         "bizType": "SingleSelect",
-        "id": "fld_status",
+        "id": "fldxmqViay",
         "name": "状态",
         "readable": true,
         "type": 3
@@ -82,7 +89,7 @@
         "type": 4,
         "writeable": true,
         "bizType": "Progress",
-        "id": "fld_progress",
+        "id": "fldygfSVXa",
         "name": "进度"
       },
       {
@@ -91,10 +98,10 @@
         "type": 1,
         "writeable": true,
         "bizType": "Text",
-        "id": "fld_version_branch"
+        "id": "fldrMEaA6o"
       },
       {
-        "id": "fld_date",
+        "id": "fldzwI1iEE",
         "name": "日期",
         "readable": true,
         "type": 5,
@@ -106,20 +113,20 @@
         "type": 1,
         "writeable": true,
         "bizType": "Text",
-        "id": "fld_tags",
+        "id": "fld7z85Gj7",
         "name": "标签"
       },
       {
         "writeable": true,
         "bizType": "Text",
-        "id": "fld_work_content",
+        "id": "fldMLo4MCT",
         "name": "工作内容",
         "readable": true,
         "type": 1
       },
       {
         "bizType": "Text",
-        "id": "fld_next_step",
+        "id": "fldb6ayy6E",
         "name": "下一步",
         "readable": true,
         "type": 1,
@@ -131,11 +138,11 @@
         "type": 1,
         "writeable": true,
         "bizType": "Text",
-        "id": "fld_risk_block"
+        "id": "fld7d9g9V2"
       },
       {
         "bizType": "Text",
-        "id": "fld_image_url",
+        "id": "fldtmhybxO",
         "name": "图片URL",
         "readable": true,
         "type": 1,
@@ -143,10 +150,26 @@
       },
       {
         "bizType": "Number",
-        "id": "fld_sort",
+        "id": "fldjgslvbc",
         "name": "排序",
         "readable": true,
         "type": 2,
+        "writeable": true
+      },
+      {
+        "id": "fldx0hGBkl",
+        "name": "所属项目",
+        "type": 15,
+        "bizType": "SingleLink",
+        "readable": true,
+        "writeable": true
+      },
+      {
+        "id": "fldHcilvPs",
+        "name": "父节点",
+        "type": 15,
+        "bizType": "SingleLink",
+        "readable": true,
         "writeable": true
       }
     ]

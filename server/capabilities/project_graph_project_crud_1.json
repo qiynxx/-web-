@@ -1,0 +1,51 @@
+{
+  "id": "project_graph_project_crud_1",
+  "pluginKey": "@official-plugins/feishu-bitable",
+  "pluginVersion": "1.0.22",
+  "name": "项目图谱项目注册表CRUD操作",
+  "description": "用于读取和维护项目目录、层次及飞书 Base 绑定信息",
+  "icon": "",
+  "paramsSchema": {},
+  "formValue": {
+    "appToken": "WC3cb3acOaminMsXKbTcwPKdnMg",
+    "tableID": "tblq5YaSINmlU2gE",
+    "fields": [
+      {
+        "id": "fldU5oCVg4",
+        "name": "项目编码",
+        "type": 1,
+        "bizType": "Text",
+        "readable": true,
+        "writeable": true
+      },
+      {
+        "id": "fldB3meK5v",
+        "name": "项目名称",
+        "type": 1,
+        "bizType": "Text",
+        "readable": true,
+        "writeable": true
+      },
+      {
+        "id": "fldGN0ANmy",
+        "name": "状态",
+        "type": 3,
+        "bizType": "SingleSelect",
+        "readable": true,
+        "writeable": true,
+        "enumValues": []
+      },
+      {
+        "id": "fldjN2hLhw",
+        "name": "说明",
+        "type": 1,
+        "bizType": "Text",
+        "readable": true,
+        "writeable": true
+      }
+    ]
+  },
+  "createdAt": 1786078800000,
+  "updatedAt": 1786078800000,
+  "createdBy": 7628147853408996570
+}
