@@ -90,6 +90,8 @@ export type EditableNodePatch = Pick<
   ProjectGraphNode,
   | 'title'
   | 'subtitle'
+  | 'lane'
+  | 'kind'
   | 'status'
   | 'owners'
   | 'progress'
@@ -624,6 +626,8 @@ export function writeNodeEdits(nodes: ProjectGraphNode[]): void {
     edits[node.id] = {
       title: node.title,
       subtitle: node.subtitle,
+      lane: node.lane,
+      kind: node.kind,
       status: node.status,
       owners: node.owners,
       progress: node.progress,

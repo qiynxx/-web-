@@ -837,6 +837,15 @@ function toNodeFields(
   if (typeof patch.subtitle === 'string') {
     fields[NODE_FIELD.SUBTITLE] = patch.subtitle;
   }
+  if (patch.lane) {
+    fields[NODE_FIELD.GROUP] = toBaseGroup(patch.lane);
+  }
+  if (patch.kind) {
+    fields[NODE_FIELD.TYPE] = toBaseNodeType(
+      patch.kind,
+      patch.lane ?? 'software',
+    );
+  }
   if (patch.status) {
     fields[NODE_FIELD.STATUS] = toBaseStatus(patch.status);
   }
@@ -1170,6 +1179,7 @@ function toProjectNodeKind(
   if (type.includes('联调') || type.includes('integration'))
     return 'integration';
   if (type.includes('硬件') || type.includes('hardware')) return 'hardware';
+  if (type.includes('算法') || type.includes('algorithm')) return 'algorithm';
   if (type.includes('软件') || type.includes('software')) return 'software';
   return lane === 'hardware'
     ? 'hardware'
@@ -1190,6 +1200,7 @@ function toBaseNodeType(
     issue: '问题',
     hardware: '硬件',
     software: '软件',
+    algorithm: '算法',
     integration: '联调',
     test: '测试',
     risk: '风险',

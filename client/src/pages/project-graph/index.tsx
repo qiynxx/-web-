@@ -37,6 +37,7 @@ import type {
   ProjectGraphResponse,
   ProjectLane,
   ProjectMetric,
+  ProjectNodeKind,
   ProjectNodeStatus,
   CreateProjectGraphNodeResponse,
   CreateProjectGraphEdgeRequest,
@@ -74,6 +75,55 @@ const METRIC_ICON: Record<ProjectMetric['tone'], typeof CircleDot> = {
   warning: AlertTriangle,
   danger: ShieldAlert,
 };
+
+const NODE_KIND_LABELS: Record<ProjectNodeKind, string> = {
+  project: '项目',
+  issue: '问题',
+  hardware: '硬件',
+  software: '软件',
+  algorithm: '算法',
+  integration: '联调',
+  test: '测试',
+  risk: '风险',
+  release: '发布',
+};
+
+const NODE_KIND_OPTIONS: ProjectNodeKind[] = [
+  'hardware',
+  'software',
+  'algorithm',
+  'integration',
+  'test',
+  'project',
+  'issue',
+  'risk',
+  'release',
+];
+
+function laneForNodeKind(
+  kind: ProjectNodeKind,
+  currentLane: ProjectLane,
+): ProjectLane {
+  if (kind === 'hardware') return 'hardware';
+  if (kind === 'software' || kind === 'algorithm') return 'software';
+  if (kind === 'integration' || kind === 'test') return 'integration';
+  return currentLane;
+}
+
+function kindForLane(
+  lane: ProjectLane,
+  currentKind: ProjectNodeKind,
+): ProjectNodeKind {
+  if (lane === 'hardware') return 'hardware';
+  if (lane === 'software') {
+    return currentKind === 'software' || currentKind === 'algorithm'
+      ? currentKind
+      : 'software';
+  }
+  return currentKind === 'integration' || currentKind === 'test'
+    ? currentKind
+    : 'test';
+}
 
 function projectOwnersToUsers(owners: ProjectOwner[]): User[] {
   return owners
@@ -1877,6 +1927,41 @@ function NodeEditor({
             </button>
           </div>
         </div>
+      </div>
+
+      <div className="editor-grid">
+        <label className="field-stack">
+          <span>所属分组</span>
+          <select
+            className="editor-select"
+            onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
+              const lane = event.target.value as ProjectLane;
+              onUpdate({ lane, kind: kindForLane(lane, node.kind) });
+            }}
+            value={node.lane}
+          >
+            <option value="hardware">硬件主干</option>
+            <option value="software">软件算法</option>
+            <option value="integration">联调测试</option>
+          </select>
+        </label>
+        <label className="field-stack">
+          <span>节点类型</span>
+          <select
+            className="editor-select"
+            onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
+              const kind = event.target.value as ProjectNodeKind;
+              onUpdate({ kind, lane: laneForNodeKind(kind, node.lane) });
+            }}
+            value={node.kind}
+          >
+            {NODE_KIND_OPTIONS.map((kind: ProjectNodeKind) => (
+              <option key={kind} value={kind}>
+                {NODE_KIND_LABELS[kind]}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       <div className="editor-grid">

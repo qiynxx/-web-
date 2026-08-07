@@ -284,6 +284,8 @@ describe('ProjectGraphService Base channel', () => {
     const { calls, service } = createService();
 
     await service.updateNode('rec_node_1', {
+      lane: 'integration',
+      kind: 'test',
       owners: [
         {
           apaasUserId: '303',
@@ -308,6 +310,8 @@ describe('ProjectGraphService Base channel', () => {
           {
             id: 'rec_node_1',
             record: {
+              分组: '联调测试',
+              节点类型: '测试',
               负责人ID: [303, 404],
               日期: Date.UTC(2026, 7, 4),
             },

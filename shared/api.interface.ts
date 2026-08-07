@@ -24,6 +24,7 @@ export type ProjectNodeKind =
   | 'issue'
   | 'hardware'
   | 'software'
+  | 'algorithm'
   | 'integration'
   | 'test'
   | 'risk'
@@ -107,6 +108,8 @@ export type UpdateProjectGraphNodeRequest = Partial<
     ProjectGraphNode,
     | 'title'
     | 'subtitle'
+    | 'lane'
+    | 'kind'
     | 'status'
     | 'owners'
     | 'progress'
