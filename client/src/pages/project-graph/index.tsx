@@ -1458,210 +1458,218 @@ function GraphCanvas({
   }
 
   return (
-    <div className="graph-canvas" ref={canvasRef}>
-      <div
-        className="graph-stage"
-        onPointerMove={updateConnectionDrag}
-        onPointerUp={() => setDragConnection(null)}
-        ref={stageRef}
-        style={{ height: layout.height, width: layout.width }}
-      >
-        <div className="hardware-rail" />
-        <div className="stage-label hardware-stage-label">硬件主分支</div>
-        <div className="stage-label software-stage-label">
-          软件 / 算法 / 测试
-        </div>
-        <svg
-          className="edge-layer"
-          height={layout.height}
-          viewBox={`0 0 ${layout.width} ${layout.height}`}
-          width={layout.width}
+    <div className="graph-canvas-shell">
+      <div className="mobile-pan-hint" aria-hidden="true">
+        <span>←</span>
+        左右滑动查看完整图谱
+        <span>→</span>
+      </div>
+      <div className="graph-canvas" ref={canvasRef}>
+        <div
+          className="graph-stage"
+          onPointerMove={updateConnectionDrag}
+          onPointerUp={() => setDragConnection(null)}
+          ref={stageRef}
+          style={{ height: layout.height, width: layout.width }}
         >
-          {layout.edges.map((edge: ProjectGraphEdge) => {
-            const source: ProjectGraphNode | undefined = nodeMap.get(
-              edge.source,
-            );
-            const target: ProjectGraphNode | undefined = nodeMap.get(
-              edge.target,
-            );
-            if (!source || !target) {
-              return null;
-            }
-            const treeEdge: boolean = isTreeEdge(edge, source, target);
-            const highlighted: boolean = edge.id === selectedEdgeId;
-            const visibleEdge: boolean =
-              treeEdge || highlighted || edge.critical;
-            if (!visibleEdge) {
-              return null;
-            }
-            const edgeClassName: string = [
-              'edge',
-              treeEdge ? 'tree-edge' : 'cross-edge',
-              edge.critical ? 'critical' : '',
-            ].join(' ');
-            return (
-              <g
-                className={[
-                  'edge-group',
-                  treeEdge ? 'tree-link' : 'cross-link',
-                  highlighted ? 'selected' : '',
-                ].join(' ')}
-                key={edge.id}
-                onClick={() => onSelectEdge(edge.id)}
-              >
-                <path
-                  className={edgeClassName}
-                  d={edgePath(edge, source, target)}
-                />
-                {highlighted ? (
-                  <text
-                    className="edge-label"
-                    x={(source.x + target.x) / 2 + 36}
-                    y={(source.y + target.y) / 2 - 6}
-                  >
-                    {edge.label}
-                  </text>
-                ) : null}
-              </g>
-            );
-          })}
-          {dragConnection ? (
-            <path
-              className="edge drag-preview-edge"
-              d={dragPreviewPath(dragConnection, nodeMap)}
-            />
-          ) : null}
-        </svg>
-        {layout.nodes.map((node: ProjectGraphNode) => (
-          <div
-            className={[
-              'graph-node',
-              node.lane === 'hardware' ? 'hardware-node' : 'branch-node',
-              STATUS_CLASS[node.status],
-              selectedId === node.id ? 'selected' : '',
-              dragConnection && dragConnection.sourceId !== node.id
-                ? 'connection-target'
-                : '',
-            ].join(' ')}
-            key={node.id}
-            onClick={() => onSelect(node.id)}
-            onPointerUp={(event: React.PointerEvent<HTMLDivElement>) => {
-              if (!dragConnection) {
-                return;
-              }
-              event.stopPropagation();
-              finishConnectionDrag(node.id);
-            }}
-            role="button"
-            style={{ left: node.x, top: node.y }}
-            tabIndex={0}
-          >
-            <button
-              aria-label={`为 ${node.title} 新建子分支`}
-              className="node-quick-add"
-              disabled={creatingNode}
-              onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
-                event.stopPropagation();
-                onAddChild(node.id);
-              }}
-              type="button"
-            >
-              <Plus />
-            </button>
-            <button
-              aria-label={`删除 ${node.title}`}
-              className="node-delete-button"
-              disabled={layout.nodes.length <= 1}
-              onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
-                event.stopPropagation();
-                onDeleteNode(node.id);
-              }}
-              type="button"
-            >
-              <Trash2 />
-            </button>
-            <HardwareThumbnail node={node} />
-            <span className="node-text">
-              <span className="node-kind">{LANE_LABELS[node.lane]}</span>
-              <strong>{node.title}</strong>
-              <small>{node.subtitle}</small>
-              <span className="node-owner">
-                {node.owners.map((owner) => owner.name).join(' / ') || '待指定'}
-              </span>
-            </span>
-            <button
-              aria-label={`从 ${node.title} 拖拽建立连接`}
-              className="node-connect-handle"
-              onPointerDown={(event: React.PointerEvent<HTMLButtonElement>) =>
-                startConnectionDrag(event, node.id)
-              }
-              type="button"
-            >
-              <Link />
-            </button>
-            <span className="node-progress">
-              <span style={{ width: `${node.progress}%` }} />
-            </span>
+          <div className="hardware-rail" />
+          <div className="stage-label hardware-stage-label">硬件主分支</div>
+          <div className="stage-label software-stage-label">
+            软件 / 算法 / 测试
           </div>
-        ))}
-        {selectedLayoutNode && selectedRelatedEdges.length > 0 ? (
-          <div
-            className="node-edge-popover"
-            style={{
-              left: selectedLayoutNode.x,
-              top: selectedLayoutNode.y + 138,
-            }}
+          <svg
+            className="edge-layer"
+            height={layout.height}
+            viewBox={`0 0 ${layout.width} ${layout.height}`}
+            width={layout.width}
           >
-            <span>连接</span>
-            {selectedRelatedEdges.map((edge: ProjectGraphEdge) => {
+            {layout.edges.map((edge: ProjectGraphEdge) => {
               const source: ProjectGraphNode | undefined = nodeMap.get(
                 edge.source,
               );
               const target: ProjectGraphNode | undefined = nodeMap.get(
                 edge.target,
               );
+              if (!source || !target) {
+                return null;
+              }
+              const treeEdge: boolean = isTreeEdge(edge, source, target);
+              const highlighted: boolean = edge.id === selectedEdgeId;
+              const visibleEdge: boolean =
+                treeEdge || highlighted || edge.critical;
+              if (!visibleEdge) {
+                return null;
+              }
+              const edgeClassName: string = [
+                'edge',
+                treeEdge ? 'tree-edge' : 'cross-edge',
+                edge.critical ? 'critical' : '',
+              ].join(' ');
               return (
-                <button
+                <g
                   className={[
-                    'node-edge-chip',
-                    edge.id === selectedEdgeId ? 'selected' : '',
-                    edge.critical ? 'critical' : '',
+                    'edge-group',
+                    treeEdge ? 'tree-link' : 'cross-link',
+                    highlighted ? 'selected' : '',
                   ].join(' ')}
                   key={edge.id}
-                  onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
-                    event.stopPropagation();
-                    onSelectEdge(edge.id);
-                  }}
-                  type="button"
+                  onClick={() => onSelectEdge(edge.id)}
                 >
-                  <small>
-                    {source?.title ?? edge.source} →{' '}
-                    {target?.title ?? edge.target}
-                  </small>
-                  <strong>{edge.label}</strong>
-                  <span
-                    aria-label={`删除连接 ${edge.label}`}
-                    className="node-edge-delete"
-                    onClick={(event: React.MouseEvent<HTMLSpanElement>) => {
-                      event.stopPropagation();
-                      onDeleteEdge(edge.id);
-                    }}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    <Trash2 />
-                  </span>
-                </button>
+                  <path
+                    className={edgeClassName}
+                    d={edgePath(edge, source, target)}
+                  />
+                  {highlighted ? (
+                    <text
+                      className="edge-label"
+                      x={(source.x + target.x) / 2 + 36}
+                      y={(source.y + target.y) / 2 - 6}
+                    >
+                      {edge.label}
+                    </text>
+                  ) : null}
+                </g>
               );
             })}
-          </div>
-        ) : null}
-        {layout.nodes.length === 0 ? (
-          <div className="empty-graph">
-            <Boxes />
-            <span>没有符合筛选条件的节点</span>
-          </div>
-        ) : null}
+            {dragConnection ? (
+              <path
+                className="edge drag-preview-edge"
+                d={dragPreviewPath(dragConnection, nodeMap)}
+              />
+            ) : null}
+          </svg>
+          {layout.nodes.map((node: ProjectGraphNode) => (
+            <div
+              className={[
+                'graph-node',
+                node.lane === 'hardware' ? 'hardware-node' : 'branch-node',
+                STATUS_CLASS[node.status],
+                selectedId === node.id ? 'selected' : '',
+                dragConnection && dragConnection.sourceId !== node.id
+                  ? 'connection-target'
+                  : '',
+              ].join(' ')}
+              key={node.id}
+              onClick={() => onSelect(node.id)}
+              onPointerUp={(event: React.PointerEvent<HTMLDivElement>) => {
+                if (!dragConnection) {
+                  return;
+                }
+                event.stopPropagation();
+                finishConnectionDrag(node.id);
+              }}
+              role="button"
+              style={{ left: node.x, top: node.y }}
+              tabIndex={0}
+            >
+              <button
+                aria-label={`为 ${node.title} 新建子分支`}
+                className="node-quick-add"
+                disabled={creatingNode}
+                onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
+                  event.stopPropagation();
+                  onAddChild(node.id);
+                }}
+                type="button"
+              >
+                <Plus />
+              </button>
+              <button
+                aria-label={`删除 ${node.title}`}
+                className="node-delete-button"
+                disabled={layout.nodes.length <= 1}
+                onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
+                  event.stopPropagation();
+                  onDeleteNode(node.id);
+                }}
+                type="button"
+              >
+                <Trash2 />
+              </button>
+              <HardwareThumbnail node={node} />
+              <span className="node-text">
+                <span className="node-kind">{LANE_LABELS[node.lane]}</span>
+                <strong>{node.title}</strong>
+                <small>{node.subtitle}</small>
+                <span className="node-owner">
+                  {node.owners.map((owner) => owner.name).join(' / ') ||
+                    '待指定'}
+                </span>
+              </span>
+              <button
+                aria-label={`从 ${node.title} 拖拽建立连接`}
+                className="node-connect-handle"
+                onPointerDown={(event: React.PointerEvent<HTMLButtonElement>) =>
+                  startConnectionDrag(event, node.id)
+                }
+                type="button"
+              >
+                <Link />
+              </button>
+              <span className="node-progress">
+                <span style={{ width: `${node.progress}%` }} />
+              </span>
+            </div>
+          ))}
+          {selectedLayoutNode && selectedRelatedEdges.length > 0 ? (
+            <div
+              className="node-edge-popover"
+              style={{
+                left: selectedLayoutNode.x,
+                top: selectedLayoutNode.y + 138,
+              }}
+            >
+              <span>连接</span>
+              {selectedRelatedEdges.map((edge: ProjectGraphEdge) => {
+                const source: ProjectGraphNode | undefined = nodeMap.get(
+                  edge.source,
+                );
+                const target: ProjectGraphNode | undefined = nodeMap.get(
+                  edge.target,
+                );
+                return (
+                  <button
+                    className={[
+                      'node-edge-chip',
+                      edge.id === selectedEdgeId ? 'selected' : '',
+                      edge.critical ? 'critical' : '',
+                    ].join(' ')}
+                    key={edge.id}
+                    onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
+                      event.stopPropagation();
+                      onSelectEdge(edge.id);
+                    }}
+                    type="button"
+                  >
+                    <small>
+                      {source?.title ?? edge.source} →{' '}
+                      {target?.title ?? edge.target}
+                    </small>
+                    <strong>{edge.label}</strong>
+                    <span
+                      aria-label={`删除连接 ${edge.label}`}
+                      className="node-edge-delete"
+                      onClick={(event: React.MouseEvent<HTMLSpanElement>) => {
+                        event.stopPropagation();
+                        onDeleteEdge(edge.id);
+                      }}
+                      role="button"
+                      tabIndex={0}
+                    >
+                      <Trash2 />
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+          {layout.nodes.length === 0 ? (
+            <div className="empty-graph">
+              <Boxes />
+              <span>没有符合筛选条件的节点</span>
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );
