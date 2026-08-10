@@ -160,11 +160,20 @@ export class ProjectGraphService {
     const records = this.usesLarkCliStorage()
       ? await this.larkCli!.listRecords(CATALOG_BASE_TOKEN, CATALOG_TABLE_ID)
       : await this.searchAllRecords(PROJECT_PLUGIN_ID);
-    const projects = this.usesLarkCliStorage()
-      ? records
-          .map((record, index) => mapCatalogRecord(record, index))
-          .filter((project): project is ProjectWorkspace => Boolean(project))
-      : records.map((record, index) => mapProjectRecord(record, index));
+    const projects = records
+      .map((record, index) => {
+        const catalogProject = mapCatalogRecord(record, index);
+        if (catalogProject) return catalogProject;
+        const hasLegacyIdentity = Boolean(
+          extractText(record.record[PROJECT_FIELD.CODE]).trim() ||
+            extractText(record.record[PROJECT_FIELD.NAME]).trim(),
+        );
+        return hasLegacyIdentity ? mapProjectRecord(record, index) : null;
+      })
+      .filter(
+        (project): project is ProjectWorkspace =>
+          Boolean(project?.id && project.name.trim()),
+      );
     if (projects.length === 0 && !this.usesLarkCliStorage()) {
       projects.push(buildDefaultWorkspace());
     }
@@ -197,27 +206,31 @@ export class ProjectGraphService {
         source: 'linked-base',
       });
     }
-    if (request.source === 'linked-base') {
-      throw new BadRequestException(
-        '当前运行时不支持动态绑定外部 Base，请创建共享 Base 项目空间。',
-      );
-    }
+    // Miaoda's cloud runtime cannot execute the local lark-cli flow that creates
+    // a brand-new Wiki Base. Keep project creation durable by falling back to a
+    // project-scoped workspace in the shared Base. The returned source is
+    // truthful, so the client never claims that a separate document was made.
+    const effectiveSource: ProjectWorkspace['source'] = 'shared-base';
     const base = DEFAULT_BASE;
-    const code = `project-${Date.now()}`;
+    const code = buildProjectCode(name);
     const meta: ProjectWorkspaceMeta = {
       parentId: request.parentId || undefined,
       sort: Date.now(),
-      source: request.source,
+      source: effectiveSource,
       base,
     };
     const recordId = await this.pluginAddRecord(PROJECT_PLUGIN_ID, {
-      [PROJECT_FIELD.CODE]: code,
-      [PROJECT_FIELD.NAME]: name,
-      [PROJECT_FIELD.STATUS]: '规划',
-      [PROJECT_FIELD.DESCRIPTION]: encodeProjectDescription(
-        request.description ?? '',
-        meta,
-      ),
+      [CATALOG_FIELD.CODE]: code,
+      [CATALOG_FIELD.NAME]: name,
+      [CATALOG_FIELD.STATUS]: '规划',
+      [CATALOG_FIELD.DESCRIPTION]: request.description?.trim() ?? '',
+      [CATALOG_FIELD.PROGRESS]: 0,
+      [CATALOG_FIELD.DOCUMENT_URL]: base.url ?? '',
+      [CATALOG_FIELD.BASE_TOKEN]: base.baseToken,
+      [CATALOG_FIELD.WIKI_NODE_TOKEN]: '',
+      [CATALOG_FIELD.NODE_TABLE_ID]: base.nodeTableId,
+      [CATALOG_FIELD.EDGE_TABLE_ID]: base.edgeTableId,
+      [CATALOG_FIELD.SOURCE]: 'Web',
     });
     this.projectCatalogCache = undefined;
     return {
@@ -289,7 +302,7 @@ export class ProjectGraphService {
         }
       } else {
         await this.pluginUpdateRecord(PROJECT_PLUGIN_ID, project.id, {
-          [PROJECT_FIELD.NAME]: name,
+          [CATALOG_FIELD.NAME]: name,
         });
       }
       this.projectCatalogCache = undefined;
@@ -470,7 +483,11 @@ export class ProjectGraphService {
     await this.pluginUpdateRecord(
       NODE_PLUGIN_ID,
       node.id,
-      this.usesLarkCliStorage() ? toCliNodeFields(patch) : toNodeFields(patch),
+      project.source === 'linked-base'
+        ? this.usesLarkCliStorage()
+          ? toCliNodeFields(patch)
+          : toLinkedNodeFields(patch)
+        : toNodeFields(patch),
       project.base,
     );
     return this.getGraph(project.id);
@@ -486,8 +503,10 @@ export class ProjectGraphService {
     const project = await this.resolveProject(projectId);
     const createdNodeId = await this.pluginAddRecord(
       NODE_PLUGIN_ID,
-      this.usesLarkCliStorage()
-        ? toCliNewNodeFields(node)
+      project.source === 'linked-base'
+        ? this.usesLarkCliStorage()
+          ? toCliNewNodeFields(node)
+          : toLinkedNewNodeFields(node)
         : toNewNodeFields(node, project),
       project.base,
     );
@@ -501,14 +520,29 @@ export class ProjectGraphService {
         critical: false,
         kind: 'tree',
       };
-      const createdEdgeId = await this.pluginAddRecord(
-        EDGE_PLUGIN_ID,
-        this.usesLarkCliStorage()
-          ? toCliNewEdgeFields(edgeInput)
-          : toNewEdgeFields(edgeInput, project),
-        project.base,
-      );
-      createdEdge = { id: createdEdgeId, ...edgeInput };
+      try {
+        const createdEdgeId = await this.pluginAddRecord(
+          EDGE_PLUGIN_ID,
+          this.usesLarkCliStorage()
+            ? toCliNewEdgeFields(edgeInput)
+            : toNewEdgeFields(edgeInput, project),
+          project.base,
+        );
+        createdEdge = { id: createdEdgeId, ...edgeInput };
+      } catch (error: unknown) {
+        try {
+          await this.pluginDeleteRecord(
+            NODE_PLUGIN_ID,
+            createdNodeId,
+            project.base,
+          );
+        } catch (rollbackError: unknown) {
+          this.logger.error(
+            `Node rollback after edge creation failure failed: ${stringifyError(rollbackError)}`,
+          );
+        }
+        throw error;
+      }
     }
     return {
       node: {
@@ -1127,7 +1161,8 @@ function mapCatalogRecord(
       extractText(record.record[CATALOG_FIELD.STATUS]),
     ),
     sort: Number.isFinite(createdTimestamp) ? createdTimestamp : index,
-    source: 'linked-base',
+    source:
+      baseToken === DEFAULT_BASE.baseToken ? 'shared-base' : 'linked-base',
     base: {
       baseToken,
       nodeTableId,
@@ -1418,7 +1453,7 @@ function toNodeFields(
   return fields;
 }
 
-function toCliNodeFields(
+function toLinkedNodeFields(
   patch: UpdateProjectGraphNodeRequest,
 ): Record<string, unknown> {
   const fields = toNodeFields({ ...patch, owners: undefined, date: undefined });
@@ -1432,6 +1467,16 @@ function toCliNodeFields(
     fields[NODE_FIELD.LEGACY_OWNER] = ownerNames.join(' / ');
     fields[NODE_FIELD.TASK_OWNER] = ownerNames;
   }
+  if (typeof patch.date === 'string') {
+    fields[NODE_FIELD.DATE] = toDateTimestamp(patch.date);
+  }
+  return fields;
+}
+
+function toCliNodeFields(
+  patch: UpdateProjectGraphNodeRequest,
+): Record<string, unknown> {
+  const fields = toLinkedNodeFields(patch);
   if (typeof patch.date === 'string') {
     fields[NODE_FIELD.DATE] = toCliDateValue(patch.date);
   }
@@ -1472,6 +1517,14 @@ function toNewNodeFields(
 function toCliNewNodeFields(
   node: CreateProjectGraphNodeRequest,
 ): Record<string, unknown> {
+  const fields = toLinkedNewNodeFields(node);
+  fields[NODE_FIELD.DATE] = toCliDateValue(node.date);
+  return fields;
+}
+
+function toLinkedNewNodeFields(
+  node: CreateProjectGraphNodeRequest,
+): Record<string, unknown> {
   const ownerNames = (node.owners ?? [])
     .map((owner) => owner.name.trim())
     .filter(Boolean);
@@ -1485,7 +1538,7 @@ function toCliNewNodeFields(
     [NODE_FIELD.TASK_OWNER]: ownerNames,
     [NODE_FIELD.PROGRESS]: normalizeProgress(node.progress ?? 0),
     [NODE_FIELD.VERSION]: node.version ?? '',
-    [NODE_FIELD.DATE]: toCliDateValue(node.date),
+    [NODE_FIELD.DATE]: toDateTimestamp(node.date),
     [NODE_FIELD.SUBTITLE]: node.subtitle ?? '',
     [NODE_FIELD.TAGS]: (node.tags ?? []).join('，'),
     [NODE_FIELD.SUMMARY]: node.summary ?? '',

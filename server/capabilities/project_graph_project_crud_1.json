@@ -2,16 +2,16 @@
   "id": "project_graph_project_crud_1",
   "pluginKey": "@official-plugins/feishu-bitable",
   "pluginVersion": "1.0.22",
-  "name": "项目图谱项目注册表CRUD操作",
-  "description": "用于读取和维护项目目录、层次及飞书 Base 绑定信息",
+  "name": "Web项目管理目录CRUD操作",
+  "description": "用于读取和维护项目目录、独立飞书 Base 绑定及项目状态",
   "icon": "",
   "paramsSchema": {},
   "formValue": {
-    "appToken": "WC3cb3acOaminMsXKbTcwPKdnMg",
-    "tableID": "tblq5YaSINmlU2gE",
+    "appToken": "I2hLbxQOsaZYcQsPuSOc3UMWnSe",
+    "tableID": "tblrpWm6qG55Xssv",
     "fields": [
       {
-        "id": "fldU5oCVg4",
+        "id": "fld3xCuGjA",
         "name": "项目编码",
         "type": 1,
         "bizType": "Text",
@@ -19,7 +19,7 @@
         "writeable": true
       },
       {
-        "id": "fldB3meK5v",
+        "id": "fldGIR9HOF",
         "name": "项目名称",
         "type": 1,
         "bizType": "Text",
@@ -27,7 +27,7 @@
         "writeable": true
       },
       {
-        "id": "fldGN0ANmy",
+        "id": "fldIVm6xxB",
         "name": "状态",
         "type": 3,
         "bizType": "SingleSelect",
@@ -36,16 +36,73 @@
         "enumValues": []
       },
       {
-        "id": "fldjN2hLhw",
-        "name": "说明",
+        "id": "fldeEqKa46",
+        "name": "项目说明",
         "type": 1,
         "bizType": "Text",
         "readable": true,
         "writeable": true
+      },
+      {
+        "id": "fldDq8hTgy",
+        "name": "整体进度",
+        "type": 4,
+        "bizType": "Progress",
+        "readable": true,
+        "writeable": true
+      },
+      {
+        "id": "fldmRnEOMM",
+        "name": "项目文档",
+        "type": 1,
+        "bizType": "URL",
+        "readable": true,
+        "writeable": true
+      },
+      {
+        "id": "fldIpUCRay",
+        "name": "Base Token",
+        "type": 1,
+        "bizType": "Text",
+        "readable": true,
+        "writeable": true
+      },
+      {
+        "id": "fldIa6pmZr",
+        "name": "Wiki 节点 Token",
+        "type": 1,
+        "bizType": "Text",
+        "readable": true,
+        "writeable": true
+      },
+      {
+        "id": "fldxe2o4ge",
+        "name": "节点表 ID",
+        "type": 1,
+        "bizType": "Text",
+        "readable": true,
+        "writeable": true
+      },
+      {
+        "id": "fldCPpP7pD",
+        "name": "连线表 ID",
+        "type": 1,
+        "bizType": "Text",
+        "readable": true,
+        "writeable": true
+      },
+      {
+        "id": "fldJhpo5N1",
+        "name": "创建来源",
+        "type": 3,
+        "bizType": "SingleSelect",
+        "readable": true,
+        "writeable": true,
+        "enumValues": []
       }
     ]
   },
   "createdAt": 1786078800000,
-  "updatedAt": 1786078800000,
+  "updatedAt": 1786353000000,
   "createdBy": 7628147853408996570
 }

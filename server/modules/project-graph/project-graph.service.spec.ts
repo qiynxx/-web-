@@ -47,6 +47,7 @@ function nodeRecord(
 function createService(options?: {
   denyMessage?: string;
   emptyNodes?: boolean;
+  failEdgeCreate?: boolean;
 }) {
   const calls: Array<{
     pluginId: string;
@@ -111,6 +112,10 @@ function createService(options?: {
   ];
   const projects = [
     {
+      id: 'rec_blank_project',
+      record: {},
+    },
+    {
       id: PROJECT_RECORD_ID,
       record: {
         项目编码: 'headset-rd',
@@ -137,6 +142,16 @@ function createService(options?: {
         说明: '包含节点的测试项目',
       },
     },
+    {
+      id: 'rec_project_linked',
+      record: {
+        项目编码: 'linked-project',
+        项目名称: '独立 Base 项目',
+        状态: '推进中',
+        说明:
+          '云端动态绑定项目\n[project-graph-meta]{"sort":4,"source":"linked-base","base":{"baseToken":"base_linked","nodeTableId":"tbl_node_linked","edgeTableId":"tbl_edge_linked","url":"https://example.feishu.cn/wiki/linked"}}',
+      },
+    },
   ];
   const capabilityService = {
     load: (pluginId: string) => ({
@@ -157,6 +172,9 @@ function createService(options?: {
           };
         }
         if (action === 'batchAddRecords') {
+          if (options?.failEdgeCreate && pluginId === EDGE_PLUGIN_ID) {
+            throw new Error('edge creation failed');
+          }
           return { records: [{ id: 'rec_created' }] };
         }
         return { success: true, records: [] };
@@ -323,6 +341,9 @@ describe('ProjectGraphService Base channel', () => {
       name: '头戴设备硬件代际项目管理',
       source: 'shared-base',
     });
+    expect(catalog.projects.some((project) => project.name === '未命名项目')).toBe(
+      false,
+    );
   });
 
   it('bypasses the project catalog cache after returning from Feishu', async () => {
@@ -371,12 +392,16 @@ describe('ProjectGraphService Base channel', () => {
     );
     expect(creation?.input).toEqual({
       records: [
-        {
-          record: expect.objectContaining({
-            项目名称: '机器人视觉平台',
-            状态: '规划',
-            说明: expect.stringContaining('[project-graph-meta]'),
-          }),
+          {
+            record: expect.objectContaining({
+              项目名称: '机器人视觉平台',
+              状态: '规划',
+              项目说明: '视觉项目',
+              'Base Token': 'WC3cb3acOaminMsXKbTcwPKdnMg',
+              '节点表 ID': 'tblVIjVsxIbuk1QQ',
+              '连线表 ID': 'tblFSCyy1hjLEFO5',
+              创建来源: 'Web',
+            }),
         },
       ],
     });
@@ -420,20 +445,38 @@ describe('ProjectGraphService Base channel', () => {
     ).toHaveLength(0);
   });
 
-  it('rejects linked Base creation instead of reading the wrong static tables', async () => {
+  it('falls back to a durable shared-Base project in the cloud runtime', async () => {
     const { calls, service } = createService();
 
-    await expect(
-      service.createProject({
-        name: '独立项目',
-        source: 'linked-base',
-        baseUrl: 'https://example.feishu.cn/base/BASE123?table=tblNode123',
-        edgeTableId: 'tblEdge123',
+    const project = await service.createProject({
+      name: '云端新项目',
+      source: 'linked-base',
+    });
+
+    expect(project).toMatchObject({
+      id: 'rec_created',
+      name: '云端新项目',
+      source: 'shared-base',
+    });
+    expect(
+      calls.find(
+        (call) =>
+          call.pluginId === PROJECT_PLUGIN_ID &&
+          call.action === 'batchAddRecords',
+      )?.input,
+    ).toEqual(
+      expect.objectContaining({
+        records: [
+          {
+            record: expect.objectContaining({
+              项目名称: '云端新项目',
+              项目说明: '',
+              'Base Token': 'WC3cb3acOaminMsXKbTcwPKdnMg',
+            }),
+          },
+        ],
       }),
-    ).rejects.toThrow(
-      '当前运行时不支持动态绑定外部 Base，请创建共享 Base 项目空间。',
     );
-    expect(calls).toEqual([]);
   });
 
   it('deletes an empty non-default project registry record', async () => {
@@ -614,6 +657,135 @@ describe('ProjectGraphService Base channel', () => {
           call.pluginId === NODE_PLUGIN_ID && call.action === 'searchRecords',
       ),
     ).toBe(false);
+  });
+
+  it('writes a linked Base with its independent schema through cloud capabilities', async () => {
+    const { calls, service } = createService();
+
+    await service.createNode(
+      {
+        title: '云端独立节点',
+        subtitle: 'Capability 动态 Base',
+        lane: 'software',
+        kind: 'algorithm',
+        status: 'active',
+        owners: [{ apaasUserId: '', name: '曾启渊' }],
+        progress: 35,
+        version: 'cloud-linked',
+        date: '2026-08-10',
+        x: 0,
+        y: 0,
+        tags: ['云端', '同步'],
+        summary: '验证妙搭写入独立 Base',
+        nextAction: '回归编辑与删除',
+        risks: [],
+        linkedIds: ['rec_parent'],
+      },
+      'rec_project_linked',
+    );
+
+    const nodeCreation = calls.find(
+      (call) =>
+        call.pluginId === NODE_PLUGIN_ID && call.action === 'batchAddRecords',
+    );
+    expect(nodeCreation?.input).toEqual(
+      expect.objectContaining({
+        baseToken: 'base_linked',
+        tableId: 'tbl_node_linked',
+        records: [
+          {
+            record: expect.objectContaining({
+              节点名称: '云端独立节点',
+              负责人: '曾启渊',
+              任务负责人: ['曾启渊'],
+              日期: Date.UTC(2026, 7, 10),
+            }),
+          },
+        ],
+      }),
+    );
+    const nodeFields = (
+      nodeCreation?.input.records as Array<{ record: Record<string, unknown> }>
+    )[0].record;
+    expect(nodeFields).not.toHaveProperty('负责人ID');
+    expect(nodeFields).not.toHaveProperty('父节点');
+    expect(nodeFields).not.toHaveProperty('所属项目');
+
+    const edgeCreation = calls.find(
+      (call) =>
+        call.pluginId === EDGE_PLUGIN_ID && call.action === 'batchAddRecords',
+    );
+    expect(edgeCreation?.input).toEqual(
+      expect.objectContaining({
+        baseToken: 'base_linked',
+        tableId: 'tbl_edge_linked',
+      }),
+    );
+  });
+
+  it('rolls a new node back when its parent edge cannot be created', async () => {
+    const { calls, service } = createService({ failEdgeCreate: true });
+
+    await expect(
+      service.createNode({
+        title: '需要回滚的节点',
+        lane: 'software',
+        kind: 'software',
+        status: 'planned',
+        owners: [],
+        progress: 0,
+        date: '2026-08-10',
+        x: 0,
+        y: 0,
+        linkedIds: ['rec_node_1'],
+      }),
+    ).rejects.toThrow('edge creation failed');
+
+    expect(
+      calls.find(
+        (call) =>
+          call.pluginId === NODE_PLUGIN_ID && call.action === 'deleteRecords',
+      )?.input,
+    ).toEqual(expect.objectContaining({ recordIDs: ['rec_created'] }));
+  });
+
+  it('edits linked-Base owners without writing shared-only fields', async () => {
+    const { calls, service } = createService();
+
+    await service.updateNode(
+      'rec_external_node',
+      {
+        owners: [
+          { apaasUserId: '', name: '曾启渊' },
+          { apaasUserId: '', name: '沈智伟' },
+        ],
+        linkedIds: ['rec_parent'],
+        date: '2026-08-10',
+      },
+      'rec_project_linked',
+    );
+
+    const update = calls.find(
+      (call) =>
+        call.pluginId === NODE_PLUGIN_ID &&
+        call.action === 'batchUpdateRecords',
+    );
+    expect(update?.input).toEqual(
+      expect.objectContaining({
+        baseToken: 'base_linked',
+        tableId: 'tbl_node_linked',
+        records: [
+          {
+            id: 'rec_external_node',
+            record: {
+              负责人: '曾启渊 / 沈智伟',
+              任务负责人: ['曾启渊', '沈智伟'],
+              日期: Date.UTC(2026, 7, 10),
+            },
+          },
+        ],
+      }),
+    );
   });
 
   it('deletes incident edges before deleting a Base node record', async () => {

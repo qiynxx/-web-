@@ -968,7 +968,11 @@ function ProjectGraphPage() {
       if (feishuWindow) {
         feishuWindow.location.replace(project.base.url || PROJECT_LIBRARY_URL);
       }
-      setSavedAt(`已创建独立项目文档“${project.name}”`);
+      setSavedAt(
+        project.source === 'linked-base'
+          ? `已创建独立项目文档“${project.name}”`
+          : `已创建项目“${project.name}”并同步到共享飞书 Base`,
+      );
       setError('');
     } catch (requestError: unknown) {
       feishuWindow?.close();
