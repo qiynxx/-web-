@@ -199,6 +199,15 @@ export class ProjectGraphService {
     if (request.source !== 'shared-base' && request.source !== 'linked-base') {
       throw new BadRequestException('项目数据源无效');
     }
+    const catalog = await this.listProjects(true);
+    if (
+      catalog.projects.some(
+        (project) =>
+          project.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase(),
+      )
+    ) {
+      throw new BadRequestException('项目名称已存在');
+    }
     if (this.usesLarkCliStorage()) {
       return this.createIndependentProject({
         ...request,

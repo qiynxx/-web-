@@ -437,6 +437,25 @@ describe('ProjectGraphService Base channel', () => {
     });
   });
 
+  it('rejects a duplicate project name before creating another catalog row', async () => {
+    const { calls, service } = createService();
+
+    await expect(
+      service.createProject({
+        name: ' 空项目 ',
+        description: '不应重复创建',
+        source: 'shared-base',
+      }),
+    ).rejects.toThrow('项目名称已存在');
+    expect(
+      calls.some(
+        (call) =>
+          call.pluginId === PROJECT_PLUGIN_ID &&
+          call.action === 'batchAddRecords',
+      ),
+    ).toBe(false);
+  });
+
   it('updates a shared project name in the project catalog', async () => {
     const { calls, service } = createService();
 

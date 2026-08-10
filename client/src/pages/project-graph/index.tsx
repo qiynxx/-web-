@@ -964,10 +964,10 @@ function ProjectGraphPage() {
       const project = await projectGraph.createProjectWorkspace(request);
       setProjects((currentProjects) => [...currentProjects, project]);
       setProjectDialogOpen(false);
-      await loadGraph(project.id);
       if (feishuWindow) {
         feishuWindow.location.replace(project.base.url || PROJECT_LIBRARY_URL);
       }
+      await loadGraph(project.id);
       setSavedAt(
         project.source === 'linked-base'
           ? `已创建独立项目文档“${project.name}”`
