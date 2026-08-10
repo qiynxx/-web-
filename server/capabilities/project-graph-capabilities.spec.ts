@@ -39,5 +39,13 @@ describe('Project graph Base capability bindings', () => {
         ['fldCPpP7pD', '连线表 ID'],
       ]),
     );
+    expect(
+      projectCapability.formValue.fields.find(
+        (field) => field.name === '项目文档',
+      ),
+    ).toMatchObject({
+      id: 'fldmRnEOMM',
+      bizType: 'Url',
+    });
   });
 });

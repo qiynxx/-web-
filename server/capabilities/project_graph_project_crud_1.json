@@ -55,7 +55,7 @@
         "id": "fldmRnEOMM",
         "name": "项目文档",
         "type": 1,
-        "bizType": "URL",
+        "bizType": "Url",
         "readable": true,
         "writeable": true
       },
