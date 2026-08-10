@@ -219,13 +219,21 @@ export class ProjectGraphService {
       source: effectiveSource,
       base,
     };
+    const documentUrl = base.url?.trim();
     const recordId = await this.pluginAddRecord(PROJECT_PLUGIN_ID, {
       [CATALOG_FIELD.CODE]: code,
       [CATALOG_FIELD.NAME]: name,
       [CATALOG_FIELD.STATUS]: '规划',
       [CATALOG_FIELD.DESCRIPTION]: request.description?.trim() ?? '',
       [CATALOG_FIELD.PROGRESS]: 0,
-      [CATALOG_FIELD.DOCUMENT_URL]: base.url ?? '',
+      ...(documentUrl
+        ? {
+            [CATALOG_FIELD.DOCUMENT_URL]: {
+              text: name,
+              link: documentUrl,
+            },
+          }
+        : {}),
       [CATALOG_FIELD.BASE_TOKEN]: base.baseToken,
       [CATALOG_FIELD.WIKI_NODE_TOKEN]: '',
       [CATALOG_FIELD.NODE_TABLE_ID]: base.nodeTableId,
@@ -1713,6 +1721,13 @@ function extractNamedOwners(value: unknown): ProjectOwner[] {
 }
 
 function extractUrl(value: unknown): string {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    const link = record.link ?? record.url;
+    if (typeof link === 'string' && link.trim()) {
+      return link.trim();
+    }
+  }
   const text = extractText(value).trim();
   const markdownLink = /^\[[^\]]*\]\((https?:\/\/[^)]+)\)$/u.exec(text);
   return markdownLink?.[1] ?? text;

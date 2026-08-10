@@ -152,6 +152,22 @@ function createService(options?: {
           '云端动态绑定项目\n[project-graph-meta]{"sort":4,"source":"linked-base","base":{"baseToken":"base_linked","nodeTableId":"tbl_node_linked","edgeTableId":"tbl_edge_linked","url":"https://example.feishu.cn/wiki/linked"}}',
       },
     },
+    {
+      id: 'rec_project_modern',
+      record: {
+        项目编码: 'modern-project',
+        项目名称: '现代目录项目',
+        状态: '规划',
+        项目说明: '使用新版目录字段',
+        项目文档: {
+          text: '打开现代目录项目',
+          link: 'https://example.feishu.cn/base/base_modern',
+        },
+        'Base Token': 'base_modern',
+        '节点表 ID': 'tbl_node_modern',
+        '连线表 ID': 'tbl_edge_modern',
+      },
+    },
   ];
   const capabilityService = {
     load: (pluginId: string) => ({
@@ -344,6 +360,14 @@ describe('ProjectGraphService Base channel', () => {
     expect(catalog.projects.some((project) => project.name === '未命名项目')).toBe(
       false,
     );
+    expect(
+      catalog.projects.find((project) => project.id === 'rec_project_modern'),
+    ).toMatchObject({
+      name: '现代目录项目',
+      base: {
+        url: 'https://example.feishu.cn/base/base_modern',
+      },
+    });
   });
 
   it('bypasses the project catalog cache after returning from Feishu', async () => {
@@ -392,16 +416,22 @@ describe('ProjectGraphService Base channel', () => {
     );
     expect(creation?.input).toEqual({
       records: [
-          {
-            record: expect.objectContaining({
-              项目名称: '机器人视觉平台',
-              状态: '规划',
-              项目说明: '视觉项目',
-              'Base Token': 'WC3cb3acOaminMsXKbTcwPKdnMg',
-              '节点表 ID': 'tblVIjVsxIbuk1QQ',
-              '连线表 ID': 'tblFSCyy1hjLEFO5',
-              创建来源: 'Web',
-            }),
+        {
+          record: expect.objectContaining({
+            项目名称: '机器人视觉平台',
+            状态: '规划',
+            项目说明: '视觉项目',
+            项目文档: {
+              text: '机器人视觉平台',
+              link: expect.stringContaining(
+                '/base/WC3cb3acOaminMsXKbTcwPKdnMg',
+              ),
+            },
+            'Base Token': 'WC3cb3acOaminMsXKbTcwPKdnMg',
+            '节点表 ID': 'tblVIjVsxIbuk1QQ',
+            '连线表 ID': 'tblFSCyy1hjLEFO5',
+            创建来源: 'Web',
+          }),
         },
       ],
     });

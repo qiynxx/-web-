@@ -975,7 +975,9 @@ function ProjectGraphPage() {
       );
       setError('');
     } catch (requestError: unknown) {
-      feishuWindow?.close();
+      if (feishuWindow && !feishuWindow.closed) {
+        feishuWindow.location.replace(PROJECT_LIBRARY_URL);
+      }
       setError(`项目创建失败：${getRequestErrorMessage(requestError)}`);
     } finally {
       setCreatingProject(false);
