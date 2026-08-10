@@ -18,6 +18,7 @@ function nodeRecord(
   group = '软件算法',
   type = '软件',
   projectId = PROJECT_RECORD_ID,
+  parentId?: string,
 ) {
   return {
     id,
@@ -38,7 +39,7 @@ function nodeRecord(
       '风险/阻塞': '',
       图片URL: '',
       所属项目: [{ id: projectId }],
-      父节点: [],
+      父节点: parentId ? [{ id: parentId }] : [],
     },
   };
 }
@@ -54,7 +55,15 @@ function createService(options?: {
   }> = [];
   const nodes = [
     nodeRecord('rec_node_1', 'stable-1', [101, 404]),
-    nodeRecord('rec_node_2', 'stable-2', 202),
+    nodeRecord(
+      'rec_node_2',
+      'stable-2',
+      202,
+      '软件算法',
+      '软件',
+      PROJECT_RECORD_ID,
+      'rec_node_1',
+    ),
     nodeRecord('rec_node_3', 'stable-3', 303, '联调测试', '硬件'),
     nodeRecord(
       'rec_node_nonempty',
@@ -70,7 +79,7 @@ function createService(options?: {
       id: 'rec_edge_1',
       record: {
         连接ID: 'stable-edge-1',
-        连接类型: '跨节点',
+        连接类型: '主树',
         来源节点: { link_record_ids: ['rec_node_1'] },
         目标节点: { link_record_ids: ['rec_node_2'] },
         标签: '依赖',
@@ -563,6 +572,7 @@ describe('ProjectGraphService Base channel', () => {
               日期: Date.UTC(2026, 7, 5),
               标签: 'Base，人员',
               图片URL: 'https://example.com/image.png',
+              父节点: ['rec_node_1'],
             }),
           },
         ],
@@ -627,6 +637,35 @@ describe('ProjectGraphService Base channel', () => {
     ).toHaveLength(2);
   });
 
+  it('deletes a Base edge record and clears its tree parent link', async () => {
+    const { calls, service } = createService();
+
+    await service.deleteEdge('rec_edge_1');
+
+    expect(
+      calls.find(
+        (call) =>
+          call.pluginId === EDGE_PLUGIN_ID && call.action === 'deleteRecords',
+      )?.input,
+    ).toEqual(expect.objectContaining({ recordIDs: ['rec_edge_1'] }));
+    expect(
+      calls.find(
+        (call) =>
+          call.pluginId === NODE_PLUGIN_ID &&
+          call.action === 'batchUpdateRecords',
+      )?.input,
+    ).toEqual(
+      expect.objectContaining({
+        records: [
+          {
+            id: 'rec_node_2',
+            record: { 父节点: [] },
+          },
+        ],
+      }),
+    );
+  });
+
   it('reads independent project metadata and select arrays through lark-cli', async () => {
     const { service } = createCliService();
 
@@ -649,6 +688,77 @@ describe('ProjectGraphService Base channel', () => {
       status: 'active',
       progress: 50,
     });
+  });
+
+  it('creates an independent node and tree edge without writing the shared parent field', async () => {
+    const { larkCli, service } = createCliService();
+    (larkCli.createRecord as jest.Mock)
+      .mockResolvedValueOnce('rec_cli_created_node')
+      .mockResolvedValueOnce('rec_cli_created_edge');
+
+    const result = await service.createNode(
+      {
+        title: '独立 Base 新节点',
+        lane: 'software',
+        kind: 'software',
+        status: 'planned',
+        owners: [{ apaasUserId: '', name: '张三' }],
+        progress: 0,
+        date: '2026-08-09',
+        x: 0,
+        y: 0,
+        linkedIds: ['rec_cli_node'],
+      },
+      'rec_catalog_1',
+    );
+
+    const nodeFields = (larkCli.createRecord as jest.Mock).mock.calls[0][2];
+    expect(nodeFields).toEqual(
+      expect.objectContaining({
+        节点名称: '独立 Base 新节点',
+        负责人: '张三',
+        任务负责人: ['张三'],
+      }),
+    );
+    expect(nodeFields).not.toHaveProperty('父节点');
+    expect(larkCli.createRecord).toHaveBeenNthCalledWith(
+      2,
+      'base_cli',
+      'tbl_edge_cli',
+      expect.objectContaining({
+        来源节点: [{ id: 'rec_cli_node' }],
+        目标节点: [{ id: 'rec_cli_created_node' }],
+        连接类型: '主树',
+      }),
+    );
+    expect(result).toMatchObject({
+      node: {
+        id: 'rec_cli_created_node',
+        linkedIds: ['rec_cli_node'],
+      },
+      edge: {
+        id: 'rec_cli_created_edge',
+        source: 'rec_cli_node',
+        target: 'rec_cli_created_node',
+      },
+    });
+  });
+
+  it('does not write the shared parent field while editing an independent node', async () => {
+    const { larkCli, service } = createCliService();
+
+    await service.updateNode(
+      'rec_cli_node',
+      { title: '已更新节点', linkedIds: ['rec_cli_parent'] },
+      'rec_catalog_1',
+    );
+
+    expect(larkCli.updateRecord).toHaveBeenCalledWith(
+      'base_cli',
+      'tbl_node_cli',
+      'rec_cli_node',
+      { 节点名称: '已更新节点' },
+    );
   });
 
   it('creates and registers an independent wiki Base through lark-cli', async () => {

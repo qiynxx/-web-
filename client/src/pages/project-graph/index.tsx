@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -9,6 +10,12 @@ import {
   FolderOpen,
   GitBranch,
   Link,
+  LoaderCircle,
+  Maximize2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Pencil,
   Plus,
   RefreshCw,
@@ -18,6 +25,8 @@ import {
   ShieldAlert,
   Trash2,
   Upload,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import { Badge } from '@client/src/components/ui/badge';
 import { Button } from '@client/src/components/ui/button';
@@ -50,7 +59,9 @@ import type {
 import {
   buildBaseTableUrl,
   buildUiMetrics,
+  calculateGraphFitScale,
   clampProgress,
+  clampGraphScale,
   createDefaultNode,
   createEdge,
   filterNodes,
@@ -207,10 +218,14 @@ function ProjectGraphPage() {
   );
   const [query, setQuery] = useState<string>('');
   const [compactMode, setCompactMode] = useState<boolean>(false);
+  const [navigationCollapsed, setNavigationCollapsed] =
+    useState<boolean>(false);
+  const [inspectorOpen, setInspectorOpen] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>('');
   const [savedAt, setSavedAt] = useState<string>('');
   const [creatingNode, setCreatingNode] = useState<boolean>(false);
+  const [deletingEdgeId, setDeletingEdgeId] = useState<string>('');
   const baseSyncTimersRef = useRef<Record<string, number>>({});
   const baseSyncPatchesRef = useRef<
     Record<string, UpdateProjectGraphNodeRequest>
@@ -571,12 +586,24 @@ function ProjectGraphPage() {
   }
 
   async function removeBaseEdge(edgeId: string): Promise<void> {
+    if (deletingEdgeId) return;
+    const edgeLabel =
+      graph?.edges.find((edge: ProjectGraphEdge) => edge.id === edgeId)
+        ?.label || '连接';
+    setDeletingEdgeId(edgeId);
+    setError('');
+    setSavedAt(`正在删除“${edgeLabel}”…`);
     try {
       const nextGraph: ProjectGraphResponse =
         await projectGraph.deleteProjectEdge(edgeId, activeProjectId);
       applyServerGraph(nextGraph);
-    } catch {
-      setError('Base 连线删除失败：请确认已登录且对该多维表格有编辑权限');
+      setSelectedEdgeId('');
+      setSavedAt(`已删除“${edgeLabel}”并写回 Base ${formatSavedTime()}`);
+    } catch (requestError: unknown) {
+      setError(`Base 连线删除失败：${getRequestErrorMessage(requestError)}`);
+      setSavedAt('连线删除失败');
+    } finally {
+      setDeletingEdgeId('');
     }
   }
 
@@ -604,6 +631,7 @@ function ProjectGraphPage() {
         metrics: buildUiMetrics(nextNodes),
       });
       setSelectedId(nextNode.id);
+      setInspectorOpen(true);
       setSelectedEdgeId('');
       setSavedAt('正在写回 Base…');
       setError('');
@@ -642,6 +670,7 @@ function ProjectGraphPage() {
       };
       persistCurrentGraph(nextGraph);
       setSelectedId(nextNode.id);
+      setInspectorOpen(true);
       setSavedAt(formatSavedTime());
       return nextGraph;
     });
@@ -727,21 +756,27 @@ function ProjectGraphPage() {
     targetId: string,
     label: string,
   ): void {
+    if (!graph || !sourceId || !targetId || sourceId === targetId) {
+      setError('请选择两个不同的节点建立连接');
+      return;
+    }
+    const edgeExists: boolean = graph.edges.some(
+      (edge: ProjectGraphEdge) =>
+        edge.source === sourceId && edge.target === targetId,
+    );
+    if (edgeExists) {
+      setError('这两个节点之间已经存在同方向连接');
+      return;
+    }
+    setError('');
     if (graph?.base) {
+      setSavedAt('正在将新连接写回 Base…');
       void writeBaseEdge(createEdge(sourceId, targetId, label));
       return;
     }
 
     setGraph((currentGraph: ProjectGraphResponse | null) => {
-      if (!currentGraph || !sourceId || sourceId === targetId) {
-        return currentGraph;
-      }
-
-      const edgeExists: boolean = currentGraph.edges.some(
-        (edge: ProjectGraphEdge) =>
-          edge.source === sourceId && edge.target === targetId,
-      );
-      if (edgeExists) {
+      if (!currentGraph) {
         return currentGraph;
       }
 
@@ -760,6 +795,17 @@ function ProjectGraphPage() {
       setSavedAt(formatSavedTime());
       return nextGraph;
     });
+  }
+
+  function selectNodeForEditing(nodeId: string): void {
+    setSelectedId(nodeId);
+    setSelectedEdgeId('');
+    setInspectorOpen(true);
+  }
+
+  function selectEdgeForEditing(edgeId: string): void {
+    setSelectedEdgeId(edgeId);
+    setInspectorOpen(true);
   }
 
   function addTreeEdge(targetId: string, label: string): void {
@@ -1053,7 +1099,13 @@ function ProjectGraphPage() {
   }
 
   return (
-    <main className="graph-shell project-shell">
+    <main
+      className={[
+        'graph-shell',
+        'project-shell',
+        navigationCollapsed ? 'navigation-collapsed' : '',
+      ].join(' ')}
+    >
       <aside className="project-navigation">
         <div className="project-navigation-title">
           <div>
@@ -1061,19 +1113,46 @@ function ProjectGraphPage() {
             <strong>飞书项目目录</strong>
           </div>
           <Badge variant="outline">{projects.length}</Badge>
+          <button
+            aria-label={navigationCollapsed ? '展开项目目录' : '收起项目目录'}
+            className="navigation-collapse-button"
+            onClick={() =>
+              setNavigationCollapsed((collapsed: boolean) => !collapsed)
+            }
+            title={navigationCollapsed ? '展开项目目录' : '收起项目目录'}
+            type="button"
+          >
+            {navigationCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+          </button>
         </div>
         <div className="project-navigation-actions">
           <Button onClick={openProjectDialog} size="sm">
             <Plus />
-            新建项目
+            <span>新建项目</span>
           </Button>
           <Button asChild size="sm" variant="outline">
             <a href={PROJECT_LIBRARY_URL} rel="noreferrer" target="_blank">
               <ArrowUpRight />
-              项目目录
+              <span>项目目录</span>
             </a>
           </Button>
         </div>
+        <label className="mobile-project-picker">
+          <FolderOpen />
+          <select
+            aria-label="选择项目"
+            onChange={(event: React.ChangeEvent<HTMLSelectElement>) =>
+              switchProject(event.target.value)
+            }
+            value={activeProjectId}
+          >
+            {projects.map((project: ProjectWorkspace) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </label>
         <nav className="project-tree" aria-label="项目层次">
           {projectRows.map(({ project, depth }) => (
             <button
@@ -1121,19 +1200,19 @@ function ProjectGraphPage() {
               variant="outline"
             >
               <Pencil />
-              修改项目名称
+              <span>项目名称</span>
             </Button>
             <Button onClick={exportCurrentProject} variant="outline">
               <Download />
-              导出
+              <span>导出</span>
             </Button>
             <Button onClick={() => void loadGraph()} variant="outline">
               <RefreshCw />
-              刷新
+              <span>刷新</span>
             </Button>
             <Button onClick={resetLocalEdits} variant="outline">
               <RotateCcw />
-              恢复默认
+              <span>恢复</span>
             </Button>
             <Button asChild variant="outline">
               <UniversalLink
@@ -1142,7 +1221,7 @@ function ProjectGraphPage() {
                 target="_blank"
               >
                 <ArrowUpRight />
-                节点表
+                <span>节点表</span>
               </UniversalLink>
             </Button>
             <Button asChild variant="outline">
@@ -1152,8 +1231,20 @@ function ProjectGraphPage() {
                 target="_blank"
               >
                 <ArrowUpRight />
-                连线表
+                <span>连线表</span>
               </UniversalLink>
+            </Button>
+            <Button
+              aria-label={inspectorOpen ? '收起编辑详情' : '打开编辑详情'}
+              className={
+                inspectorOpen ? 'inspector-toggle active' : 'inspector-toggle'
+              }
+              onClick={() => setInspectorOpen((open: boolean) => !open)}
+              title={inspectorOpen ? '收起编辑详情' : '打开编辑详情'}
+              variant="outline"
+            >
+              {inspectorOpen ? <PanelRightClose /> : <PanelRightOpen />}
+              <span>{inspectorOpen ? '收起详情' : '编辑详情'}</span>
             </Button>
           </div>
         </section>
@@ -1196,7 +1287,11 @@ function ProjectGraphPage() {
           })}
         </section>
 
-        <section className="graph-workspace">
+        <section
+          className={
+            inspectorOpen ? 'graph-workspace inspector-open' : 'graph-workspace'
+          }
+        >
           <div className="graph-main-panel">
             <div className="graph-toolbar">
               <div className="search-box">
@@ -1239,19 +1334,33 @@ function ProjectGraphPage() {
 
             <GraphCanvas
               creatingNode={creatingNode}
+              deletingEdgeId={deletingEdgeId}
               layout={graphLayout}
               onAddChild={addChildNode}
               onConnectNodes={addConnectionEdge}
               onDeleteEdge={deleteEdge}
               onDeleteNode={deleteNode}
-              onSelectEdge={setSelectedEdgeId}
-              onSelect={setSelectedId}
+              onSelectEdge={selectEdgeForEditing}
+              onSelect={selectNodeForEditing}
               selectedEdgeId={selectedEdgeId}
               selectedId={selectedId}
             />
           </div>
 
           <aside className="graph-side-panel">
+            <div className="inspector-heading">
+              <div>
+                <span>节点与连线</span>
+                <strong>{selectedNode?.title ?? '未选择节点'}</strong>
+              </div>
+              <button
+                aria-label="关闭编辑详情"
+                onClick={() => setInspectorOpen(false)}
+                type="button"
+              >
+                <PanelRightClose />
+              </button>
+            </div>
             {selectedNode ? (
               <NodeEditor
                 isBaseBacked={Boolean(graph.base)}
@@ -1262,6 +1371,7 @@ function ProjectGraphPage() {
             ) : null}
             <FlowEditor
               creatingNode={creatingNode}
+              deletingEdgeId={deletingEdgeId}
               edges={graph.edges}
               nodes={graph.nodes}
               onAddNode={addNode}
@@ -1447,6 +1557,7 @@ function SegmentedControl<T extends string>({
 
 interface GraphCanvasProps {
   creatingNode: boolean;
+  deletingEdgeId: string;
   layout: GraphLayout;
   selectedId: string;
   selectedEdgeId: string;
@@ -1462,10 +1573,28 @@ interface DragConnectionState {
   sourceId: string;
   x: number;
   y: number;
+  targetId?: string;
+  sticky: boolean;
+}
+
+interface CanvasPanState {
+  pointerId: number;
+  clientX: number;
+  clientY: number;
+  scrollLeft: number;
+  scrollTop: number;
+}
+
+interface CanvasPinchState {
+  distance: number;
+  scale: number;
+  stageX: number;
+  stageY: number;
 }
 
 function GraphCanvas({
   creatingNode,
+  deletingEdgeId,
   layout,
   selectedId,
   selectedEdgeId,
@@ -1478,6 +1607,18 @@ function GraphCanvas({
 }: GraphCanvasProps) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const scaleRef = useRef<number>(1);
+  const panRef = useRef<CanvasPanState | null>(null);
+  const pinchRef = useRef<CanvasPinchState | null>(null);
+  const touchPointersRef = useRef<Map<number, { x: number; y: number }>>(
+    new Map(),
+  );
+  const dragConnectionRef = useRef<DragConnectionState | null>(null);
+  const connectionStartRef = useRef<{ x: number; y: number } | null>(null);
+  const connectionMovedRef = useRef<boolean>(false);
+  const onConnectNodesRef = useRef(onConnectNodes);
+  const [scale, setScale] = useState<number>(1);
+  const [isPanning, setIsPanning] = useState<boolean>(false);
   const [dragConnection, setDragConnection] =
     useState<DragConnectionState | null>(null);
   const nodeMap: Map<string, ProjectGraphNode> = useMemo(() => {
@@ -1491,6 +1632,108 @@ function GraphCanvas({
     (edge: ProjectGraphEdge) =>
       edge.source === selectedId || edge.target === selectedId,
   );
+  const selectedRelatedNodeIds: Set<string> = new Set(
+    selectedRelatedEdges.flatMap((edge: ProjectGraphEdge) => [
+      edge.source,
+      edge.target,
+    ]),
+  );
+
+  onConnectNodesRef.current = onConnectNodes;
+
+  function commitScale(nextScale: number): number {
+    const normalizedScale = clampGraphScale(nextScale);
+    scaleRef.current = normalizedScale;
+    setScale(normalizedScale);
+    return normalizedScale;
+  }
+
+  function centerScaledStage(nextScale: number): void {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    requestAnimationFrame(() => {
+      canvas.scrollTo({
+        left: Math.max(0, (layout.width * nextScale - canvas.clientWidth) / 2),
+        top: Math.max(0, (layout.height * nextScale - canvas.clientHeight) / 2),
+      });
+    });
+  }
+
+  function fitGraphToViewport(): void {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const viewport = canvas.parentElement ?? canvas;
+    const nextScale = commitScale(
+      calculateGraphFitScale(
+        viewport.clientWidth,
+        viewport.clientHeight,
+        layout.width,
+        layout.height,
+      ),
+    );
+    centerScaledStage(nextScale);
+  }
+
+  function zoomAroundPoint(
+    nextScale: number,
+    clientX: number,
+    clientY: number,
+  ): void {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const offsetX = clientX - rect.left;
+    const offsetY = clientY - rect.top;
+    const currentScale = scaleRef.current;
+    const stageX = (canvas.scrollLeft + offsetX) / currentScale;
+    const stageY = (canvas.scrollTop + offsetY) / currentScale;
+    const normalizedScale = commitScale(nextScale);
+    requestAnimationFrame(() => {
+      canvas.scrollTo({
+        left: Math.max(0, stageX * normalizedScale - offsetX),
+        top: Math.max(0, stageY * normalizedScale - offsetY),
+      });
+    });
+  }
+
+  function zoomFromCenter(factor: number): void {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    zoomAroundPoint(
+      scaleRef.current * factor,
+      rect.left + rect.width / 2,
+      rect.top + rect.height / 2,
+    );
+  }
+
+  function setConnectionState(next: DragConnectionState | null): void {
+    dragConnectionRef.current = next;
+    setDragConnection(next);
+  }
+
+  function getStagePointFromClient(
+    clientX: number,
+    clientY: number,
+  ): {
+    x: number;
+    y: number;
+  } {
+    const rect = stageRef.current?.getBoundingClientRect();
+    const currentScale = scaleRef.current;
+    return {
+      x: (clientX - (rect?.left ?? 0)) / currentScale,
+      y: (clientY - (rect?.top ?? 0)) / currentScale,
+    };
+  }
+
+  function getNodeIdAtPoint(clientX: number, clientY: number): string {
+    const element = document.elementFromPoint(clientX, clientY);
+    return (
+      element?.closest<HTMLElement>('[data-graph-node-id]')?.dataset
+        .graphNodeId ?? ''
+    );
+  }
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1500,46 +1743,91 @@ function GraphCanvas({
     if (!canvas || !selectedNode) {
       return;
     }
-    const margin = 24;
-    const nodeLeft = selectedNode.offsetLeft;
-    const nodeRight = nodeLeft + selectedNode.offsetWidth;
-    const nodeTop = selectedNode.offsetTop;
-    const nodeBottom = nodeTop + selectedNode.offsetHeight;
-    const visibleLeft = canvas.scrollLeft;
-    const visibleRight = visibleLeft + canvas.clientWidth;
-    const visibleTop = canvas.scrollTop;
-    const visibleBottom = visibleTop + canvas.clientHeight;
+    const margin = 28;
+    const canvasRect = canvas.getBoundingClientRect();
+    const nodeRect = selectedNode.getBoundingClientRect();
     if (
-      nodeLeft >= visibleLeft + margin &&
-      nodeRight <= visibleRight - margin &&
-      nodeTop >= visibleTop + margin &&
-      nodeBottom <= visibleBottom - margin
+      nodeRect.left >= canvasRect.left + margin &&
+      nodeRect.right <= canvasRect.right - margin &&
+      nodeRect.top >= canvasRect.top + margin &&
+      nodeRect.bottom <= canvasRect.bottom - margin
     ) {
       return;
     }
-    canvas.scrollTo({
+    canvas.scrollBy({
       behavior: 'smooth',
-      left: Math.max(
-        0,
-        nodeLeft - (canvas.clientWidth - selectedNode.offsetWidth) / 2,
-      ),
-      top: Math.max(
-        0,
-        nodeTop - (canvas.clientHeight - selectedNode.offsetHeight) / 2,
-      ),
+      left:
+        nodeRect.left +
+        nodeRect.width / 2 -
+        (canvasRect.left + canvasRect.width / 2),
+      top:
+        nodeRect.top +
+        nodeRect.height / 2 -
+        (canvasRect.top + canvasRect.height / 2),
     });
   }, [layout.nodes, selectedId]);
 
-  function getStagePoint(event: React.PointerEvent<HTMLElement>): {
-    x: number;
-    y: number;
-  } {
-    const rect: DOMRect | undefined = stageRef.current?.getBoundingClientRect();
-    return {
-      x: event.clientX - (rect?.left ?? 0),
-      y: event.clientY - (rect?.top ?? 0),
+  useEffect(() => {
+    fitGraphToViewport();
+    const canvas = canvasRef.current;
+    const canvasShell = canvas?.parentElement;
+    if (!canvas || !canvasShell || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+    const observer = new ResizeObserver(() => fitGraphToViewport());
+    observer.observe(canvasShell);
+    return () => observer.disconnect();
+  }, [layout.height, layout.width]);
+
+  useEffect(() => {
+    function updateConnection(event: PointerEvent): void {
+      const current = dragConnectionRef.current;
+      if (!current) return;
+      const start = connectionStartRef.current;
+      if (
+        start &&
+        Math.hypot(event.clientX - start.x, event.clientY - start.y) > 5
+      ) {
+        connectionMovedRef.current = true;
+      }
+      const point = getStagePointFromClient(event.clientX, event.clientY);
+      const targetId = getNodeIdAtPoint(event.clientX, event.clientY);
+      setConnectionState({
+        ...current,
+        ...point,
+        targetId:
+          targetId && targetId !== current.sourceId ? targetId : undefined,
+      });
+    }
+
+    function finishConnection(event: PointerEvent): void {
+      const current = dragConnectionRef.current;
+      if (!current) return;
+      const targetId = getNodeIdAtPoint(event.clientX, event.clientY);
+      if (targetId && targetId !== current.sourceId) {
+        onConnectNodesRef.current(current.sourceId, targetId, '关联');
+        setConnectionState(null);
+      } else if (!connectionMovedRef.current) {
+        setConnectionState({ ...current, sticky: true, targetId: undefined });
+      } else if (!current.sticky) {
+        setConnectionState(null);
+      }
+      connectionStartRef.current = null;
+    }
+
+    function cancelConnection(event: KeyboardEvent): void {
+      if (event.key === 'Escape') setConnectionState(null);
+    }
+
+    window.addEventListener('pointermove', updateConnection);
+    window.addEventListener('pointerup', finishConnection);
+    window.addEventListener('keydown', cancelConnection);
+    return () => {
+      window.removeEventListener('pointermove', updateConnection);
+      window.removeEventListener('pointerup', finishConnection);
+      window.removeEventListener('keydown', cancelConnection);
     };
-  }
+  }, []);
 
   function startConnectionDrag(
     event: React.PointerEvent<HTMLButtonElement>,
@@ -1547,244 +1835,483 @@ function GraphCanvas({
   ): void {
     event.preventDefault();
     event.stopPropagation();
-    const pointerPoint: { x: number; y: number } = getStagePoint(event);
-    setDragConnection({ sourceId, ...pointerPoint });
+    connectionMovedRef.current = false;
+    connectionStartRef.current = { x: event.clientX, y: event.clientY };
+    const pointerPoint = getStagePointFromClient(event.clientX, event.clientY);
+    setConnectionState({
+      sourceId,
+      ...pointerPoint,
+      sticky: false,
+    });
     onSelect(sourceId);
   }
 
-  function updateConnectionDrag(
-    event: React.PointerEvent<HTMLDivElement>,
-  ): void {
-    if (!dragConnection) {
-      return;
-    }
-    const pointerPoint: { x: number; y: number } = getStagePoint(event);
-    setDragConnection((current: DragConnectionState | null) =>
-      current ? { ...current, ...pointerPoint } : current,
-    );
+  function handleCanvasWheel(event: React.WheelEvent<HTMLDivElement>): void {
+    event.preventDefault();
+    const factor = Math.exp(-event.deltaY * 0.0014);
+    zoomAroundPoint(scaleRef.current * factor, event.clientX, event.clientY);
   }
 
-  function finishConnectionDrag(targetId: string): void {
-    if (!dragConnection || dragConnection.sourceId === targetId) {
-      setDragConnection(null);
+  function handleCanvasPointerDown(
+    event: React.PointerEvent<HTMLDivElement>,
+  ): void {
+    const interactiveTarget = (event.target as Element).closest(
+      '.graph-node, .edge-group, .canvas-zoom-controls, .node-edge-popover, button, a, input, select, textarea, [role="button"]',
+    );
+    if (interactiveTarget || (event.button !== 0 && event.button !== 1)) {
       return;
     }
-    onConnectNodes(dragConnection.sourceId, targetId, '关联');
-    setDragConnection(null);
+    if (event.pointerType === 'touch') {
+      touchPointersRef.current.set(event.pointerId, {
+        x: event.clientX,
+        y: event.clientY,
+      });
+    }
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    event.preventDefault();
+    canvas.setPointerCapture(event.pointerId);
+    panRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      scrollLeft: canvas.scrollLeft,
+      scrollTop: canvas.scrollTop,
+    };
+    setIsPanning(true);
+  }
+
+  function handleCanvasPointerMove(
+    event: React.PointerEvent<HTMLDivElement>,
+  ): void {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (touchPointersRef.current.has(event.pointerId)) {
+      touchPointersRef.current.set(event.pointerId, {
+        x: event.clientX,
+        y: event.clientY,
+      });
+    }
+    const touchPoints = [...touchPointersRef.current.values()];
+    if (touchPoints.length >= 2) {
+      const [first, second] = touchPoints;
+      const distance = Math.hypot(second.x - first.x, second.y - first.y);
+      const centerX = (first.x + second.x) / 2;
+      const centerY = (first.y + second.y) / 2;
+      if (!pinchRef.current) {
+        const rect = canvas.getBoundingClientRect();
+        pinchRef.current = {
+          distance,
+          scale: scaleRef.current,
+          stageX: (canvas.scrollLeft + centerX - rect.left) / scaleRef.current,
+          stageY: (canvas.scrollTop + centerY - rect.top) / scaleRef.current,
+        };
+      } else {
+        const pinch = pinchRef.current;
+        const nextScale = commitScale(
+          pinch.scale * (distance / Math.max(1, pinch.distance)),
+        );
+        const rect = canvas.getBoundingClientRect();
+        canvas.scrollTo({
+          left: Math.max(0, pinch.stageX * nextScale - (centerX - rect.left)),
+          top: Math.max(0, pinch.stageY * nextScale - (centerY - rect.top)),
+        });
+      }
+      panRef.current = null;
+      setIsPanning(false);
+      return;
+    }
+    const pan = panRef.current;
+    if (!pan || pan.pointerId !== event.pointerId) return;
+    canvas.scrollTo({
+      left: pan.scrollLeft - (event.clientX - pan.clientX),
+      top: pan.scrollTop - (event.clientY - pan.clientY),
+    });
+  }
+
+  function handleCanvasPointerEnd(
+    event: React.PointerEvent<HTMLDivElement>,
+  ): void {
+    touchPointersRef.current.delete(event.pointerId);
+    if (touchPointersRef.current.size < 2) pinchRef.current = null;
+    if (panRef.current?.pointerId === event.pointerId) {
+      panRef.current = null;
+      setIsPanning(false);
+    }
+    if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
+      canvasRef.current.releasePointerCapture(event.pointerId);
+    }
   }
 
   return (
     <div className="graph-canvas-shell">
       <div className="mobile-pan-hint" aria-hidden="true">
-        <span>←</span>
-        左右滑动查看完整图谱
-        <span>→</span>
+        单指拖动画布 · 双指缩放 · 点击连接点后选择目标
       </div>
-      <div className="graph-canvas" ref={canvasRef}>
-        <div
-          className="graph-stage"
-          onPointerMove={updateConnectionDrag}
-          onPointerUp={() => setDragConnection(null)}
-          ref={stageRef}
-          style={{ height: layout.height, width: layout.width }}
+      <div className="canvas-zoom-controls">
+        <button
+          aria-label="缩小流程图"
+          onClick={() => zoomFromCenter(0.84)}
+          title="缩小"
+          type="button"
         >
-          <div className="hardware-rail" />
-          <div className="stage-label hardware-stage-label">硬件主分支</div>
-          <div className="stage-label software-stage-label">
-            软件 / 算法 / 测试
-          </div>
-          <svg
-            className="edge-layer"
-            height={layout.height}
-            viewBox={`0 0 ${layout.width} ${layout.height}`}
-            width={layout.width}
+          <ZoomOut />
+        </button>
+        <span>{Math.round(scale * 100)}%</span>
+        <button
+          aria-label="放大流程图"
+          onClick={() => zoomFromCenter(1.19)}
+          title="放大"
+          type="button"
+        >
+          <ZoomIn />
+        </button>
+        <button
+          aria-label="适应窗口"
+          onClick={fitGraphToViewport}
+          title="适应窗口"
+          type="button"
+        >
+          <Maximize2 />
+        </button>
+      </div>
+      {dragConnection ? (
+        <div className="connection-mode-hint">
+          <Link />
+          {dragConnection.targetId
+            ? '松开即可连接到当前节点'
+            : dragConnection.sticky
+              ? '请选择任意目标节点，Esc 取消'
+              : '拖到目标节点并松开'}
+        </div>
+      ) : null}
+      <div
+        className={isPanning ? 'graph-canvas is-panning' : 'graph-canvas'}
+        onPointerCancel={handleCanvasPointerEnd}
+        onPointerDown={handleCanvasPointerDown}
+        onPointerMove={handleCanvasPointerMove}
+        onPointerUp={handleCanvasPointerEnd}
+        onWheel={handleCanvasWheel}
+        ref={canvasRef}
+      >
+        <div
+          className="graph-stage-viewport"
+          style={
+            {
+              '--graph-band-height': `${236 * scale}px`,
+              '--graph-grid-size': `${Math.max(8, 22 * scale)}px`,
+              height: layout.height * scale,
+              width: layout.width * scale,
+            } as CSSProperties
+          }
+        >
+          <div
+            className="graph-stage"
+            ref={stageRef}
+            style={{
+              height: layout.height,
+              transform: `scale(${scale})`,
+              width: layout.width,
+            }}
           >
-            {layout.edges.map((edge: ProjectGraphEdge) => {
-              const source: ProjectGraphNode | undefined = nodeMap.get(
-                edge.source,
-              );
-              const target: ProjectGraphNode | undefined = nodeMap.get(
-                edge.target,
-              );
-              if (!source || !target) {
-                return null;
-              }
-              const treeEdge: boolean = isTreeEdge(edge, source, target);
-              const highlighted: boolean = edge.id === selectedEdgeId;
-              const visibleEdge: boolean =
-                treeEdge || highlighted || edge.critical;
-              if (!visibleEdge) {
-                return null;
-              }
-              const edgeClassName: string = [
-                'edge',
-                treeEdge ? 'tree-edge' : 'cross-edge',
-                edge.critical ? 'critical' : '',
-              ].join(' ');
-              return (
-                <g
-                  className={[
-                    'edge-group',
-                    treeEdge ? 'tree-link' : 'cross-link',
-                    highlighted ? 'selected' : '',
-                  ].join(' ')}
-                  key={edge.id}
-                  onClick={() => onSelectEdge(edge.id)}
+            <div className="hardware-rail" />
+            <div className="stage-label hardware-stage-label">硬件主分支</div>
+            <div className="stage-label software-stage-label">
+              软件 / 算法 / 测试
+            </div>
+            <svg
+              className="edge-layer"
+              height={layout.height}
+              viewBox={`0 0 ${layout.width} ${layout.height}`}
+              width={layout.width}
+            >
+              <defs>
+                <marker
+                  id="graph-arrow-default"
+                  markerHeight="9"
+                  markerUnits="userSpaceOnUse"
+                  markerWidth="9"
+                  orient="auto"
+                  refX="8"
+                  refY="4.5"
+                  viewBox="0 0 9 9"
                 >
                   <path
-                    className={edgeClassName}
-                    d={edgePath(edge, source, target)}
+                    className="edge-arrow-default"
+                    d="M 0 0 L 9 4.5 L 0 9 z"
                   />
-                  {highlighted ? (
-                    <text
-                      className="edge-label"
-                      x={(source.x + target.x) / 2 + 36}
-                      y={(source.y + target.y) / 2 - 6}
-                    >
-                      {edge.label}
-                    </text>
-                  ) : null}
-                </g>
-              );
-            })}
-            {dragConnection ? (
-              <path
-                className="edge drag-preview-edge"
-                d={dragPreviewPath(dragConnection, nodeMap)}
-              />
-            ) : null}
-          </svg>
-          {layout.nodes.map((node: ProjectGraphNode) => (
-            <div
-              className={[
-                'graph-node',
-                node.lane === 'hardware' ? 'hardware-node' : 'branch-node',
-                STATUS_CLASS[node.status],
-                selectedId === node.id ? 'selected' : '',
-                dragConnection && dragConnection.sourceId !== node.id
-                  ? 'connection-target'
-                  : '',
-              ].join(' ')}
-              key={node.id}
-              onClick={() => onSelect(node.id)}
-              onPointerUp={(event: React.PointerEvent<HTMLDivElement>) => {
-                if (!dragConnection) {
-                  return;
-                }
-                event.stopPropagation();
-                finishConnectionDrag(node.id);
-              }}
-              role="button"
-              style={{ left: node.x, top: node.y }}
-              tabIndex={0}
-            >
-              <button
-                aria-label={`为 ${node.title} 新建子分支`}
-                className="node-quick-add"
-                disabled={creatingNode}
-                onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
-                  event.stopPropagation();
-                  onAddChild(node.id);
-                }}
-                type="button"
-              >
-                <Plus />
-              </button>
-              <button
-                aria-label={`删除 ${node.title}`}
-                className="node-delete-button"
-                disabled={layout.nodes.length <= 1}
-                onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
-                  event.stopPropagation();
-                  onDeleteNode(node.id);
-                }}
-                type="button"
-              >
-                <Trash2 />
-              </button>
-              <HardwareThumbnail node={node} />
-              <span className="node-text">
-                <span className="node-kind">{LANE_LABELS[node.lane]}</span>
-                <strong>{node.title}</strong>
-                <small>{node.subtitle}</small>
-                <span className="node-owner">
-                  {node.owners.map((owner) => owner.name).join(' / ') ||
-                    '待指定'}
-                </span>
-              </span>
-              <button
-                aria-label={`从 ${node.title} 拖拽建立连接`}
-                className="node-connect-handle"
-                onPointerDown={(event: React.PointerEvent<HTMLButtonElement>) =>
-                  startConnectionDrag(event, node.id)
-                }
-                type="button"
-              >
-                <Link />
-              </button>
-              <span className="node-progress">
-                <span style={{ width: `${node.progress}%` }} />
-              </span>
-            </div>
-          ))}
-          {selectedLayoutNode && selectedRelatedEdges.length > 0 ? (
-            <div
-              className="node-edge-popover"
-              style={{
-                left: selectedLayoutNode.x,
-                top: selectedLayoutNode.y + 138,
-              }}
-            >
-              <span>连接</span>
-              {selectedRelatedEdges.map((edge: ProjectGraphEdge) => {
+                </marker>
+                <marker
+                  id="graph-arrow-related"
+                  markerHeight="10"
+                  markerUnits="userSpaceOnUse"
+                  markerWidth="10"
+                  orient="auto"
+                  refX="9"
+                  refY="5"
+                  viewBox="0 0 10 10"
+                >
+                  <path
+                    className="edge-arrow-related"
+                    d="M 0 0 L 10 5 L 0 10 z"
+                  />
+                </marker>
+                <marker
+                  id="graph-arrow-critical"
+                  markerHeight="10"
+                  markerUnits="userSpaceOnUse"
+                  markerWidth="10"
+                  orient="auto"
+                  refX="9"
+                  refY="5"
+                  viewBox="0 0 10 10"
+                >
+                  <path
+                    className="edge-arrow-critical"
+                    d="M 0 0 L 10 5 L 0 10 z"
+                  />
+                </marker>
+              </defs>
+              {layout.edges.map((edge: ProjectGraphEdge) => {
                 const source: ProjectGraphNode | undefined = nodeMap.get(
                   edge.source,
                 );
                 const target: ProjectGraphNode | undefined = nodeMap.get(
                   edge.target,
                 );
+                if (!source || !target) {
+                  return null;
+                }
+                const treeEdge: boolean = isTreeEdge(edge, source, target);
+                const highlighted: boolean = edge.id === selectedEdgeId;
+                const relatedToSelected: boolean =
+                  edge.source === selectedId || edge.target === selectedId;
+                const labelPoint = edgeLabelPoint(edge, source, target);
+                const labelText: string =
+                  edge.label || (treeEdge ? '派生' : '关联');
+                const labelWidth: number = Math.min(
+                  190,
+                  Math.max(58, labelText.length * 12 + 24),
+                );
+                const edgeClassName: string = [
+                  'edge',
+                  treeEdge ? 'tree-edge' : 'cross-edge',
+                  edge.critical ? 'critical' : '',
+                ].join(' ');
                 return (
-                  <button
+                  <g
                     className={[
-                      'node-edge-chip',
-                      edge.id === selectedEdgeId ? 'selected' : '',
-                      edge.critical ? 'critical' : '',
+                      'edge-group',
+                      treeEdge ? 'tree-link' : 'cross-link',
+                      highlighted ? 'selected' : '',
+                      relatedToSelected ? 'related' : 'unrelated',
                     ].join(' ')}
                     key={edge.id}
-                    onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
-                      event.stopPropagation();
-                      onSelectEdge(edge.id);
-                    }}
-                    type="button"
+                    onClick={() => onSelectEdge(edge.id)}
                   >
-                    <small>
-                      {source?.title ?? edge.source} →{' '}
-                      {target?.title ?? edge.target}
-                    </small>
-                    <strong>{edge.label}</strong>
-                    <span
-                      aria-label={`删除连接 ${edge.label}`}
-                      className="node-edge-delete"
-                      onClick={(event: React.MouseEvent<HTMLSpanElement>) => {
-                        event.stopPropagation();
-                        onDeleteEdge(edge.id);
-                      }}
-                      role="button"
-                      tabIndex={0}
-                    >
-                      <Trash2 />
-                    </span>
-                  </button>
+                    <path
+                      className="edge-hit-area"
+                      d={edgePath(edge, source, target)}
+                    />
+                    <path
+                      className={edgeClassName}
+                      d={edgePath(edge, source, target)}
+                      markerEnd={
+                        'url(#' +
+                        (edge.critical
+                          ? 'graph-arrow-critical'
+                          : highlighted || relatedToSelected
+                            ? 'graph-arrow-related'
+                            : 'graph-arrow-default') +
+                        ')'
+                      }
+                    />
+                    {highlighted || relatedToSelected ? (
+                      <g
+                        className="edge-label-group"
+                        transform={
+                          'translate(' + labelPoint.x + ' ' + labelPoint.y + ')'
+                        }
+                      >
+                        <rect
+                          height="24"
+                          rx="12"
+                          width={labelWidth}
+                          x={-labelWidth / 2}
+                          y="-12"
+                        />
+                        <text className="edge-label" textAnchor="middle" y="4">
+                          {labelText}
+                        </text>
+                      </g>
+                    ) : null}
+                  </g>
                 );
               })}
-            </div>
-          ) : null}
-          {layout.nodes.length === 0 ? (
-            <div className="empty-graph">
-              <Boxes />
-              <span>没有符合筛选条件的节点</span>
-            </div>
-          ) : null}
+              {dragConnection ? (
+                <path
+                  className="edge drag-preview-edge"
+                  d={dragPreviewPath(dragConnection, nodeMap)}
+                />
+              ) : null}
+            </svg>
+            {layout.nodes.map((node: ProjectGraphNode) => (
+              <div
+                className={[
+                  'graph-node',
+                  node.lane === 'hardware' ? 'hardware-node' : 'branch-node',
+                  STATUS_CLASS[node.status],
+                  selectedId === node.id ? 'selected' : '',
+                  selectedRelatedNodeIds.has(node.id) && selectedId !== node.id
+                    ? 'relation-peer'
+                    : '',
+                  dragConnection?.targetId === node.id
+                    ? 'connection-target'
+                    : '',
+                ].join(' ')}
+                data-graph-node-id={node.id}
+                key={node.id}
+                onClick={() => {
+                  const connection = dragConnectionRef.current;
+                  if (connection?.sticky && connection.sourceId !== node.id) {
+                    onConnectNodes(connection.sourceId, node.id, '关联');
+                    setConnectionState(null);
+                    return;
+                  }
+                  onSelect(node.id);
+                }}
+                role="button"
+                style={{ left: node.x, top: node.y }}
+                tabIndex={0}
+              >
+                <button
+                  aria-label={`为 ${node.title} 新建子分支`}
+                  className="node-quick-add"
+                  disabled={creatingNode}
+                  onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
+                    event.stopPropagation();
+                    onAddChild(node.id);
+                  }}
+                  type="button"
+                >
+                  <Plus />
+                </button>
+                <button
+                  aria-label={`删除 ${node.title}`}
+                  className="node-delete-button"
+                  disabled={layout.nodes.length <= 1}
+                  onClick={(event: React.MouseEvent<HTMLButtonElement>) => {
+                    event.stopPropagation();
+                    onDeleteNode(node.id);
+                  }}
+                  type="button"
+                >
+                  <Trash2 />
+                </button>
+                <HardwareThumbnail node={node} />
+                <span className="node-text">
+                  <span className="node-kind">{LANE_LABELS[node.lane]}</span>
+                  <strong>{node.title}</strong>
+                  <small>{node.subtitle}</small>
+                  <span className="node-owner">
+                    {node.owners.map((owner) => owner.name).join(' / ') ||
+                      '待指定'}
+                  </span>
+                </span>
+                <button
+                  aria-label={`从 ${node.title} 拖拽建立连接`}
+                  className="node-connect-handle"
+                  onPointerDown={(
+                    event: React.PointerEvent<HTMLButtonElement>,
+                  ) => startConnectionDrag(event, node.id)}
+                  type="button"
+                >
+                  <Link />
+                </button>
+                <span className="node-progress">
+                  <span style={{ width: `${node.progress}%` }} />
+                </span>
+              </div>
+            ))}
+            {selectedLayoutNode && selectedRelatedEdges.length > 0 ? (
+              <div
+                className="node-edge-popover"
+                style={{
+                  left: selectedLayoutNode.x,
+                  top: selectedLayoutNode.y + 138,
+                }}
+              >
+                <span>连接</span>
+                {selectedRelatedEdges.map((edge: ProjectGraphEdge) => {
+                  const source: ProjectGraphNode | undefined = nodeMap.get(
+                    edge.source,
+                  );
+                  const target: ProjectGraphNode | undefined = nodeMap.get(
+                    edge.target,
+                  );
+                  const outgoing: boolean = edge.source === selectedId;
+                  const deleting: boolean = deletingEdgeId === edge.id;
+                  return (
+                    <div
+                      className={[
+                        'node-edge-chip',
+                        edge.id === selectedEdgeId ? 'selected' : '',
+                        edge.critical ? 'critical' : '',
+                      ].join(' ')}
+                      key={edge.id}
+                    >
+                      <button
+                        className="node-edge-select"
+                        onClick={(
+                          event: React.MouseEvent<HTMLButtonElement>,
+                        ) => {
+                          event.stopPropagation();
+                          onSelectEdge(edge.id);
+                        }}
+                        type="button"
+                      >
+                        <span
+                          className={
+                            outgoing
+                              ? 'edge-direction outgoing'
+                              : 'edge-direction incoming'
+                          }
+                        >
+                          {outgoing ? '传出' : '传入'}
+                        </span>
+                        <small>
+                          {source?.title ?? edge.source} →{' '}
+                          {target?.title ?? edge.target}
+                        </small>
+                        <strong>{edge.label || '关联'}</strong>
+                      </button>
+                      <button
+                        aria-label={`删除连接 ${edge.label}`}
+                        className="node-edge-delete"
+                        disabled={deleting}
+                        onClick={(
+                          event: React.MouseEvent<HTMLButtonElement>,
+                        ) => {
+                          event.stopPropagation();
+                          onDeleteEdge(edge.id);
+                        }}
+                        title="删除这条连接"
+                        type="button"
+                      >
+                        {deleting ? <LoaderCircle /> : <Trash2 />}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+            {layout.nodes.length === 0 ? (
+              <div className="empty-graph">
+                <Boxes />
+                <span>没有符合筛选条件的节点</span>
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
     </div>
@@ -1883,6 +2410,36 @@ function edgePath(
     `${target.x - 56} ${bendY}`,
     `${target.x} ${targetCenterY}`,
   ].join(' ');
+}
+
+function edgeLabelPoint(
+  edge: ProjectGraphEdge,
+  source: ProjectGraphNode,
+  target: ProjectGraphNode,
+): { x: number; y: number } {
+  const nodeWidth = 220;
+  const nodeHeight = 128;
+  const sourceCenterX = source.x + nodeWidth / 2;
+  const targetCenterX = target.x + nodeWidth / 2;
+  const sourceCenterY = source.y + nodeHeight / 2;
+  const targetCenterY = target.y + nodeHeight / 2;
+
+  if (source.lane === 'hardware' && target.lane === 'hardware') {
+    return {
+      x: (source.x + nodeWidth + target.x) / 2,
+      y: (sourceCenterY + targetCenterY) / 2 - 14,
+    };
+  }
+  if (isTreeEdge(edge, source, target)) {
+    return {
+      x: (sourceCenterX + targetCenterX) / 2,
+      y: source.y + nodeHeight + 60,
+    };
+  }
+  return {
+    x: (source.x + nodeWidth + target.x) / 2,
+    y: (sourceCenterY + targetCenterY) / 2 - 14,
+  };
 }
 
 function dragPreviewPath(
@@ -2152,6 +2709,7 @@ function NodeEditor({
 
 interface FlowEditorProps {
   creatingNode: boolean;
+  deletingEdgeId: string;
   nodes: ProjectGraphNode[];
   edges: ProjectGraphEdge[];
   selectedId: string;
@@ -2168,6 +2726,7 @@ interface FlowEditorProps {
 
 function FlowEditor({
   creatingNode,
+  deletingEdgeId,
   nodes,
   edges,
   selectedId,
@@ -2335,17 +2894,32 @@ function FlowEditor({
         {relatedEdges.length === 0 ? (
           <p>暂无连接</p>
         ) : (
-          relatedEdges.map((edge: ProjectGraphEdge) => (
-            <div className="edge-edit-row" key={edge.id}>
-              <strong>{edge.label}</strong>
-              <small>
-                {edge.source} → {edge.target}
-              </small>
-              <button onClick={() => onDeleteEdge(edge.id)} type="button">
-                <Trash2 />
-              </button>
-            </div>
-          ))
+          relatedEdges.map((edge: ProjectGraphEdge) => {
+            const source = nodes.find(
+              (node: ProjectGraphNode) => node.id === edge.source,
+            );
+            const target = nodes.find(
+              (node: ProjectGraphNode) => node.id === edge.target,
+            );
+            const deleting = deletingEdgeId === edge.id;
+            return (
+              <div className="edge-edit-row" key={edge.id}>
+                <strong>{edge.label || '关联'}</strong>
+                <small>
+                  {source?.title ?? edge.source} →{' '}
+                  {target?.title ?? edge.target}
+                </small>
+                <button
+                  aria-label={`删除连接 ${edge.label}`}
+                  disabled={deleting}
+                  onClick={() => onDeleteEdge(edge.id)}
+                  type="button"
+                >
+                  {deleting ? <LoaderCircle /> : <Trash2 />}
+                </button>
+              </div>
+            );
+          })
         )}
       </div>
 

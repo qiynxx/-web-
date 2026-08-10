@@ -608,11 +608,53 @@ export class ProjectGraphService {
       throw new BadRequestException('edgeId is required');
     }
     const project = await this.resolveProject(projectId);
-    const record = isBaseRecordId(edgeId)
-      ? { id: edgeId }
-      : await this.findEdgeByEdgeId(edgeId, project.base);
+    const record = await this.findEdgeByEdgeId(edgeId, project.base);
     if (!record) throw new BadRequestException('edge not found');
+    let parentCleanup:
+      | { targetId: string; remainingParentIds: string[] }
+      | undefined;
+    if (extractText(record.record[EDGE_FIELD.TYPE]) === '主树') {
+      const nodeRecords = await this.searchAllRecords(
+        NODE_PLUGIN_ID,
+        project.base,
+      );
+      const nodeRecordIds = new Set(nodeRecords.map((node) => node.id));
+      const sourceId = extractFirstLinkId(
+        record.record[EDGE_FIELD.SOURCE],
+        nodeRecordIds,
+      );
+      const targetId = extractFirstLinkId(
+        record.record[EDGE_FIELD.TARGET],
+        nodeRecordIds,
+      );
+      const targetRecord = nodeRecords.find((node) => node.id === targetId);
+      const currentParentIds = targetRecord
+        ? extractLinkIds(targetRecord.record[NODE_FIELD.PARENT], nodeRecordIds)
+        : [];
+      if (sourceId && targetId && currentParentIds.includes(sourceId)) {
+        parentCleanup = {
+          targetId,
+          remainingParentIds: currentParentIds.filter(
+            (parentId) => parentId !== sourceId,
+          ),
+        };
+      }
+    }
     await this.pluginDeleteRecord(EDGE_PLUGIN_ID, record.id, project.base);
+    if (parentCleanup) {
+      try {
+        await this.pluginUpdateRecord(
+          NODE_PLUGIN_ID,
+          parentCleanup.targetId,
+          { [NODE_FIELD.PARENT]: parentCleanup.remainingParentIds },
+          project.base,
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          `Edge deleted but parent link cleanup failed: ${stringifyError(error)}`,
+        );
+      }
+    }
     return this.getGraph(project.id);
   }
 
@@ -1370,6 +1412,9 @@ function toNodeFields(
   if (typeof patch.imageUrl === 'string') {
     fields[NODE_FIELD.IMAGE] = patch.imageUrl;
   }
+  if (patch.linkedIds !== undefined) {
+    fields[NODE_FIELD.PARENT] = patch.linkedIds.slice(0, 1);
+  }
   return fields;
 }
 
@@ -1377,6 +1422,9 @@ function toCliNodeFields(
   patch: UpdateProjectGraphNodeRequest,
 ): Record<string, unknown> {
   const fields = toNodeFields({ ...patch, owners: undefined, date: undefined });
+  // Independent project Bases keep graph relationships in the edge table.
+  // Their node tables intentionally do not contain the shared-Base 父节点 field.
+  delete fields[NODE_FIELD.PARENT];
   if (patch.owners !== undefined) {
     const ownerNames = patch.owners
       .map((owner) => owner.name.trim())
@@ -1409,6 +1457,7 @@ function toNewNodeFields(
     [NODE_FIELD.NEXT]: node.nextAction ?? '',
     [NODE_FIELD.RISKS]: (node.risks ?? []).join('\n'),
     [NODE_FIELD.IMAGE]: node.imageUrl ?? '',
+    [NODE_FIELD.PARENT]: (node.linkedIds ?? []).slice(0, 1),
     [NODE_FIELD.SORT]: 0,
   };
   if (project.source === 'shared-base') {
@@ -1520,8 +1569,7 @@ function reconcileGraphRelationships(
     );
     const parentEdge = linkedParentId
       ? incoming.find((edge) => edge.source === linkedParentId)
-      : (incoming.find((edge) => edge.kind === 'tree') ??
-        (incoming.length === 1 ? incoming[0] : undefined));
+      : incoming.find((edge) => edge.kind === 'tree');
     if (parentEdge) {
       treeEdgeIds.add(parentEdge.id);
     }

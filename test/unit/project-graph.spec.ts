@@ -6,6 +6,9 @@ import {
 } from '../../server/modules/project-graph/project-graph-static';
 import {
   buildBaseTableUrl,
+  layoutGraph,
+  calculateGraphFitScale,
+  clampGraphScale,
   findAddedNode,
 } from '../../client/src/pages/project-graph/project-graph-model';
 
@@ -107,6 +110,61 @@ describe('project-graph-static', () => {
           'tbl_edges',
         ),
       ).toBe('https://my.feishu.cn/base/base_token?table=tbl_edges&view=vew_1');
+    });
+  });
+
+  describe('graph zoom', () => {
+    it('fits a wide graph into desktop and portrait viewports', () => {
+      expect(calculateGraphFitScale(1200, 760, 1280, 720)).toBeCloseTo(
+        0.909,
+        2,
+      );
+      expect(calculateGraphFitScale(430, 650, 1280, 720)).toBeCloseTo(0.32, 2);
+    });
+
+    it('keeps continuous zoom inside usable limits', () => {
+      expect(clampGraphScale(0.1)).toBe(0.32);
+      expect(clampGraphScale(1.27)).toBe(1.27);
+      expect(clampGraphScale(3)).toBe(1.8);
+      expect(clampGraphScale(Number.NaN)).toBe(1);
+    });
+  });
+
+  describe('free graph connections', () => {
+    it('keeps a cross connection out of the tree layout', () => {
+      const templateNodes = buildStaticNodes();
+      const hardware = {
+        ...templateNodes.find((node) => node.lane === 'hardware')!,
+        id: 'hardware-root',
+        linkedIds: [],
+      };
+      const software = {
+        ...templateNodes.find((node) => node.lane === 'software')!,
+        id: 'software-independent',
+        linkedIds: [],
+      };
+      const layout = layoutGraph(
+        [hardware, software],
+        [
+          {
+            id: 'free-link',
+            source: hardware.id,
+            target: software.id,
+            label: '自由连接',
+            critical: false,
+            kind: 'cross',
+          },
+        ],
+      );
+      const positionedHardware = layout.nodes.find(
+        (node) => node.id === hardware.id,
+      )!;
+      const positionedSoftware = layout.nodes.find(
+        (node) => node.id === software.id,
+      )!;
+
+      expect(positionedSoftware.x).toBeGreaterThan(positionedHardware.x);
+      expect(layout.width).toBeLessThan(1280);
     });
   });
 });

@@ -1,7 +1,33 @@
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import {
+  createLarkCliException,
   isNoOperationEnvelope,
   recordsFromMatrix,
 } from './lark-cli-base.client';
+
+describe('createLarkCliException', () => {
+  it('keeps the Feishu error code and schema hint in a readable 400 response', () => {
+    const exception = createLarkCliException({
+      code: 800030201,
+      message: 'not_found',
+      hint: 'List fields in the current table, then retry.',
+    });
+
+    expect(exception).toBeInstanceOf(BadRequestException);
+    expect(exception.message).toContain('800030201');
+    expect(exception.message).toContain('not_found');
+    expect(exception.message).toContain('List fields');
+  });
+
+  it('maps permission failures to a 403 response', () => {
+    const exception = createLarkCliException({
+      code: 91403,
+      message: 'forbidden',
+    });
+
+    expect(exception).toBeInstanceOf(ForbiddenException);
+  });
+});
 
 describe('isNoOperationEnvelope', () => {
   it('accepts the Feishu no-op response as an idempotent success', () => {

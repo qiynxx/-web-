@@ -12,6 +12,8 @@ export const GRAPH_STORAGE_KEY = 'rd-project-graph-edits-v2';
 export const GRAPH_DRAFT_STORAGE_KEY = 'rd-project-graph-draft-v3';
 export const PROJECT_LIBRARY_KEY = 'rd-project-graph-library-v1';
 export const ACTIVE_PROJECT_KEY = 'rd-project-graph-active-v1';
+export const GRAPH_MIN_SCALE = 0.32;
+export const GRAPH_MAX_SCALE = 1.8;
 
 export const LANE_LABELS: Record<ProjectLane | 'all', string> = {
   all: '全部',
@@ -84,6 +86,30 @@ export interface ProjectLibraryItem {
   name: string;
   updatedAt: string;
   graph: ProjectGraphResponse;
+}
+
+export function clampGraphScale(scale: number): number {
+  if (!Number.isFinite(scale)) return 1;
+  return Math.min(GRAPH_MAX_SCALE, Math.max(GRAPH_MIN_SCALE, scale));
+}
+
+export function calculateGraphFitScale(
+  viewportWidth: number,
+  viewportHeight: number,
+  graphWidth: number,
+  graphHeight: number,
+): number {
+  if (
+    viewportWidth <= 0 ||
+    viewportHeight <= 0 ||
+    graphWidth <= 0 ||
+    graphHeight <= 0
+  ) {
+    return 1;
+  }
+  const horizontalScale = Math.max(0, viewportWidth - 36) / graphWidth;
+  const verticalScale = Math.max(0, viewportHeight - 36) / graphHeight;
+  return clampGraphScale(Math.min(horizontalScale, verticalScale, 1));
 }
 
 export type EditableNodePatch = Pick<
@@ -406,11 +432,16 @@ export function layoutGraph(
     (edge: ProjectGraphEdge) =>
       visibleIds.has(edge.source) && visibleIds.has(edge.target),
   );
+  const contentRight: number = positionedNodes.reduce(
+    (right: number, node: ProjectGraphNode) =>
+      Math.max(right, node.x + nodeWidth),
+    leftPadding + nodeWidth,
+  );
 
   return {
     nodes: positionedNodes,
     edges: visibleEdges,
-    width: Math.max(1280, orphanStartX + 2 * nodeWidth + branchColumnGap + 96),
+    width: Math.max(760, contentRight + 96),
     height: Math.max(720, branchStartY + maxDepth * branchGapY + 170),
   };
 }
@@ -699,20 +730,13 @@ function findDirectParentId(
     return linkedParentId;
   }
 
-  const edgeParent: ProjectGraphEdge | undefined =
-    edges.find(
-      (edge: ProjectGraphEdge) =>
-        edge.target === node.id &&
-        edge.source !== node.id &&
-        edge.kind === 'tree' &&
-        nodeMap.has(edge.source),
-    ) ??
-    edges.find(
-      (edge: ProjectGraphEdge) =>
-        edge.target === node.id &&
-        edge.source !== node.id &&
-        nodeMap.has(edge.source),
-    );
+  const edgeParent: ProjectGraphEdge | undefined = edges.find(
+    (edge: ProjectGraphEdge) =>
+      edge.target === node.id &&
+      edge.source !== node.id &&
+      edge.kind === 'tree' &&
+      nodeMap.has(edge.source),
+  );
   if (!edgeParent) {
     return undefined;
   }

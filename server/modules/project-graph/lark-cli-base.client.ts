@@ -1,5 +1,10 @@
 import { execFile } from 'node:child_process';
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 
 export interface LarkCliRecord {
   id: string;
@@ -390,12 +395,7 @@ export class LarkCliBaseClient {
         );
         return undefined as T;
       }
-      throw new Error(
-        envelope.error?.message ||
-          envelope.error?.hint ||
-          stderr.trim() ||
-          'lark-cli 操作失败',
-      );
+      throw createLarkCliException(envelope.error, stderr.trim());
     }
     if (!envelope.data) {
       throw new Error('lark-cli 操作成功但未返回数据');
@@ -411,6 +411,31 @@ export function isNoOperationEnvelope(
     !envelope.ok &&
     (String(envelope.error?.code ?? '') === '800070003' ||
       envelope.error?.message === 'no operation produced')
+  );
+}
+
+export function createLarkCliException(
+  error?: LarkCliEnvelope<unknown>['error'],
+  fallback = '',
+): BadRequestException | ForbiddenException {
+  const code = String(error?.code ?? '').trim();
+  const message = error?.message?.trim() || fallback || 'lark-cli 操作失败';
+  const hint = error?.hint?.trim();
+  const detail = hint && hint !== message ? `${message}；${hint}` : message;
+  const normalized = `${code} ${detail}`.toLowerCase();
+  if (
+    normalized.includes('permission') ||
+    normalized.includes('forbidden') ||
+    normalized.includes('not authorized') ||
+    normalized.includes('91403') ||
+    detail.includes('权限')
+  ) {
+    return new ForbiddenException(
+      `飞书操作权限不足${code ? `（${code}）` : ''}: ${detail}`,
+    );
+  }
+  return new BadRequestException(
+    `飞书 Base 操作失败${code ? `（${code}）` : ''}: ${detail}`,
   );
 }
 
@@ -442,6 +467,13 @@ function executeFile(
       },
       (error, stdout, stderr) => {
         if (error) {
+          // lark-cli returns structured JSON on stdout for API failures while
+          // also exiting non-zero. Let run() parse that envelope so callers get
+          // the real Feishu code/message instead of a generic HTTP 500.
+          if (stdout.trim()) {
+            resolve({ stdout, stderr });
+            return;
+          }
           reject(
             new Error(stderr.trim() || stdout.trim() || error.message, {
               cause: error,
