@@ -346,6 +346,7 @@ function ProjectGraphPage() {
           ? storedProjectId
           : catalog.defaultProjectId;
       await loadGraph(targetProjectId, false);
+      void projectGraph.retryProjectCatalogSync().catch(() => undefined);
     } catch (loadError: unknown) {
       setError(`项目目录加载失败：${getRequestErrorMessage(loadError)}`);
       setLoading(false);

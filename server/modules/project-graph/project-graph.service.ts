@@ -163,12 +163,6 @@ export class ProjectGraphService {
   async listProjects(
     forceRefresh = false,
   ): Promise<ProjectWorkspaceListResponse> {
-    if (forceRefresh && this.usesOpenApiStorage()) {
-      const userId = await this.requireCurrentLarkUserId();
-      void this.retryPendingCatalogProjects(userId).catch((error: unknown) => {
-        this.logger.warn(`Catalog mirror retry could not start: ${stringifyError(error)}`);
-      });
-    }
     const openApiProjects = this.usesOpenApiStorage()
       ? await this.workspaceRepository!.listReady()
       : [];
