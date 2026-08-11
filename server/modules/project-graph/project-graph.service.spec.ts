@@ -534,6 +534,7 @@ describe('ProjectGraphService Base channel', () => {
     const result = await service.deleteProject('rec_project_empty');
 
     expect(result.deletedProjectId).toBe('rec_project_empty');
+    expect(result.deletedBase).toBe(false);
     expect(
       calls.find(
         (call) =>

@@ -51,6 +51,7 @@ export class FeishuOpenApiClient {
         'base:record:read',
         'base:record:update',
         'base:record:delete',
+        'drive:drive',
       ].join(' '),
     });
     return `https://accounts.feishu.cn/open-apis/authen/v1/authorize?${query.toString()}`;

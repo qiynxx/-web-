@@ -3,7 +3,7 @@ import {
   DRIZZLE_DATABASE,
   type PostgresJsDatabase,
 } from '@lark-apaas/nestjs-datapaas';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq, ne, or } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { projectWorkspace } from '@server/database/project-storage.schema';
 import type {
@@ -19,6 +19,9 @@ export interface ProvisioningWorkspace {
   creatorUserId: string;
   provisioningStatus: string;
   provisioningError?: string;
+  catalogSyncStatus: string;
+  deletionStatus: string;
+  deletionError?: string;
   base?: Partial<BaseLinkConfig>;
   catalogRecordId?: string;
 }
@@ -39,7 +42,15 @@ export class ProjectWorkspaceRepository {
     const rows = await this.requireDatabase()
       .select()
       .from(projectWorkspace)
-      .where(eq(projectWorkspace.provisioningStatus, 'ready'))
+      .where(
+        and(
+          eq(projectWorkspace.provisioningStatus, 'ready'),
+          or(
+            eq(projectWorkspace.deletionStatus, 'active'),
+            eq(projectWorkspace.deletionStatus, 'delete_failed'),
+          ),
+        ),
+      )
       .orderBy(asc(projectWorkspace.createdAt));
     return rows.flatMap((row) => {
       if (!row.baseToken || !row.nodeTableId || !row.edgeTableId) return [];
@@ -75,7 +86,12 @@ export class ProjectWorkspaceRepository {
     const [existing] = await db
       .select()
       .from(projectWorkspace)
-      .where(eq(projectWorkspace.normalizedName, normalizedName))
+      .where(
+        and(
+          eq(projectWorkspace.normalizedName, normalizedName),
+          ne(projectWorkspace.deletionStatus, 'deleted'),
+        ),
+      )
       .limit(1);
     if (existing) return mapProvisioning(existing);
 
@@ -98,7 +114,12 @@ export class ProjectWorkspaceRepository {
     const [created] = await db
       .select()
       .from(projectWorkspace)
-      .where(eq(projectWorkspace.normalizedName, normalizedName))
+      .where(
+        and(
+          eq(projectWorkspace.normalizedName, normalizedName),
+          ne(projectWorkspace.deletionStatus, 'deleted'),
+        ),
+      )
       .limit(1);
     if (!created) throw new Error('项目目录记录创建失败');
     return mapProvisioning(created);
@@ -171,6 +192,83 @@ export class ProjectWorkspaceRepository {
       })
       .where(eq(projectWorkspace.id, id));
   }
+
+  async findById(id: string): Promise<ProvisioningWorkspace | undefined> {
+    const [row] = await this.requireDatabase()
+      .select()
+      .from(projectWorkspace)
+      .where(eq(projectWorkspace.id, id))
+      .limit(1);
+    return row ? mapProvisioning(row) : undefined;
+  }
+
+  async listPendingCatalog(userId: string): Promise<ProvisioningWorkspace[]> {
+    const rows = await this.requireDatabase()
+      .select()
+      .from(projectWorkspace)
+      .where(
+        and(
+          eq(projectWorkspace.creatorUserId, userId),
+          eq(projectWorkspace.provisioningStatus, 'ready'),
+          or(
+            eq(projectWorkspace.deletionStatus, 'active'),
+            eq(projectWorkspace.deletionStatus, 'delete_failed'),
+          ),
+          ne(projectWorkspace.catalogSyncStatus, 'synced'),
+        ),
+      );
+    return rows.map(mapProvisioning);
+  }
+
+  async markCatalogPending(id: string, error?: string): Promise<void> {
+    await this.requireDatabase()
+      .update(projectWorkspace)
+      .set({
+        catalogSyncStatus: error ? 'failed' : 'pending',
+        provisioningError: error?.slice(0, 2_000) ?? null,
+        updatedAt: Date.now(),
+      })
+      .where(eq(projectWorkspace.id, id));
+  }
+
+  async markDeleting(id: string): Promise<void> {
+    await this.requireDatabase()
+      .update(projectWorkspace)
+      .set({ deletionStatus: 'deleting', deletionError: null, updatedAt: Date.now() })
+      .where(eq(projectWorkspace.id, id));
+  }
+
+  async markDeletionFailed(id: string, error: string): Promise<void> {
+    await this.requireDatabase()
+      .update(projectWorkspace)
+      .set({
+        deletionStatus: 'delete_failed',
+        deletionError: error.slice(0, 2_000),
+        updatedAt: Date.now(),
+      })
+      .where(eq(projectWorkspace.id, id));
+  }
+
+  async markDeleted(id: string): Promise<void> {
+    const now = Date.now();
+    await this.requireDatabase()
+      .update(projectWorkspace)
+      .set({
+        normalizedName: `deleted:${id}`,
+        baseToken: null,
+        nodeTableId: null,
+        edgeTableId: null,
+        baseUrl: null,
+        catalogRecordId: null,
+        catalogSyncStatus: 'deleted',
+        deletionStatus: 'deleted',
+        deletionError: null,
+        deletedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(projectWorkspace.id, id));
+  }
+
   private requireDatabase(): PostgresJsDatabase {
     if (!this.db) throw new Error('妙搭数据库未启用');
     return this.db;
@@ -192,6 +290,9 @@ function mapProvisioning(
     creatorUserId: row.creatorUserId,
     provisioningStatus: row.provisioningStatus,
     provisioningError: row.provisioningError ?? undefined,
+    catalogSyncStatus: row.catalogSyncStatus,
+    deletionStatus: row.deletionStatus,
+    deletionError: row.deletionError ?? undefined,
     base: row.baseToken
       ? {
           baseToken: row.baseToken,

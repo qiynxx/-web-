@@ -152,8 +152,14 @@ export interface ProjectWorkspaceListResponse {
   defaultProjectId: string;
 }
 
+export interface DeleteProjectWorkspaceRequest {
+  confirmName: string;
+  deleteBase: true;
+}
+
 export interface DeleteProjectWorkspaceResponse {
   deletedProjectId: string;
+  deletedBase: boolean;
   savedAt: string;
 }
 

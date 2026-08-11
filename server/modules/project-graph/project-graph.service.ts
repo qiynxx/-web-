@@ -14,6 +14,7 @@ import type {
   CreateProjectGraphEdgeRequest,
   CreateProjectGraphNodeRequest,
   CreateProjectWorkspaceRequest,
+  DeleteProjectWorkspaceRequest,
   DeleteProjectWorkspaceResponse,
   DeleteProjectGraphNodeResponse,
   BaseLinkConfig,
@@ -57,6 +58,10 @@ const CATALOG_WIKI_URL =
 const PROJECT_WIKI_PARENT_NODE_TOKEN =
   process.env.PROJECT_GRAPH_WIKI_PARENT_NODE_TOKEN ||
   'EVYowE8rSi4ZWqkCIu8cc2EQn8d';
+
+const PROJECT_WEB_APP_URL =
+  process.env.PROJECT_GRAPH_WEB_APP_URL ||
+  'https://vcnqhq28cfdm.feishuapp.com/app/app_17bfb2avggp';
 
 const DEFAULT_BASE: BaseLinkConfig = {
   baseToken: 'WC3cb3acOaminMsXKbTcwPKdnMg',
@@ -119,6 +124,7 @@ const CATALOG_FIELD = {
   DESCRIPTION: '项目说明',
   PROGRESS: '整体进度',
   DOCUMENT_URL: '项目文档',
+  WEB_URL: 'Web 可视化',
   BASE_TOKEN: 'Base Token',
   WIKI_NODE_TOKEN: 'Wiki 节点 Token',
   NODE_TABLE_ID: '节点表 ID',
@@ -157,6 +163,10 @@ export class ProjectGraphService {
   async listProjects(
     forceRefresh = false,
   ): Promise<ProjectWorkspaceListResponse> {
+    if (forceRefresh && this.usesOpenApiStorage()) {
+      const userId = await this.requireCurrentLarkUserId();
+      await this.retryPendingCatalogProjects(userId);
+    }
     const openApiProjects = this.usesOpenApiStorage()
       ? await this.workspaceRepository!.listReady()
       : [];
@@ -331,6 +341,10 @@ export class ProjectGraphService {
         const userId = await this.requireCurrentLarkUserId();
         await this.feishuBase!.renameBase(userId, project.base.baseToken, name);
         await this.workspaceRepository!.rename(project.id, name);
+        const renamedWorkspace = await this.workspaceRepository!.findById(project.id);
+        if (renamedWorkspace) {
+          await this.syncCatalogProject(userId, renamedWorkspace);
+        }
         this.projectCatalogCache = undefined;
       } else if (this.usesLarkCliStorage()) {
         await this.larkCli!.renameBitable(project.base.baseToken, name);
@@ -423,29 +437,15 @@ export class ProjectGraphService {
       await this.workspaceRepository.saveBase(workspace.id, base);
       this.projectCatalogCache = undefined;
       try {
-        const catalogRecordId = await this.feishuBase.createRecord(
-          userId,
-          CATALOG_BASE_TOKEN,
-          CATALOG_TABLE_ID,
-          {
-            [CATALOG_FIELD.CODE]: workspace.code,
-            [CATALOG_FIELD.NAME]: workspace.name,
-            [CATALOG_FIELD.STATUS]: '规划',
-            [CATALOG_FIELD.DESCRIPTION]: workspace.description,
-            [CATALOG_FIELD.PROGRESS]: 0,
-            [CATALOG_FIELD.DOCUMENT_URL]: base.url ?? '',
-            [CATALOG_FIELD.BASE_TOKEN]: base.baseToken,
-            [CATALOG_FIELD.WIKI_NODE_TOKEN]: '',
-            [CATALOG_FIELD.NODE_TABLE_ID]: base.nodeTableId,
-            [CATALOG_FIELD.EDGE_TABLE_ID]: base.edgeTableId,
-            [CATALOG_FIELD.SOURCE]: 'Web OpenAPI',
-          },
-        );
-        await this.workspaceRepository.markCatalogSynced(
-          workspace.id,
-          catalogRecordId,
-        );
+        await this.syncCatalogProject(userId, {
+          ...workspace,
+          base,
+        });
       } catch (catalogError: unknown) {
+        await this.workspaceRepository.markCatalogPending(
+          workspace.id,
+          stringifyError(catalogError),
+        );
         this.logger.warn(
           `Project created but catalog mirror failed: ${stringifyError(catalogError)}`,
         );
@@ -468,6 +468,91 @@ export class ProjectGraphService {
         stringifyError(error),
       );
       throw error;
+    }
+  }
+
+  private async syncCatalogProject(
+    userId: string,
+    workspace: {
+      id: string;
+      code: string;
+      name: string;
+      description: string;
+      catalogRecordId?: string;
+      base?: Partial<BaseLinkConfig>;
+    },
+  ): Promise<void> {
+    const base = workspace.base;
+    if (!base?.baseToken || !base.nodeTableId || !base.edgeTableId) {
+      throw new BadRequestException('项目 Base 尚未创建完成');
+    }
+    await this.feishuBase!.ensureUrlField(
+      userId,
+      CATALOG_BASE_TOKEN,
+      CATALOG_TABLE_ID,
+      CATALOG_FIELD.WEB_URL,
+    );
+    const webUrl = `${PROJECT_WEB_APP_URL}?projectId=${encodeURIComponent(workspace.id)}`;
+    const fields = {
+      [CATALOG_FIELD.CODE]: workspace.code,
+      [CATALOG_FIELD.NAME]: workspace.name,
+      [CATALOG_FIELD.STATUS]: '规划',
+      [CATALOG_FIELD.DESCRIPTION]: workspace.description,
+      [CATALOG_FIELD.PROGRESS]: 0,
+      [CATALOG_FIELD.DOCUMENT_URL]: base.url ?? '',
+      [CATALOG_FIELD.WEB_URL]: { text: '打开 Web 可视化', link: webUrl },
+      [CATALOG_FIELD.BASE_TOKEN]: base.baseToken,
+      [CATALOG_FIELD.WIKI_NODE_TOKEN]: '',
+      [CATALOG_FIELD.NODE_TABLE_ID]: base.nodeTableId,
+      [CATALOG_FIELD.EDGE_TABLE_ID]: base.edgeTableId,
+      [CATALOG_FIELD.SOURCE]: 'Web OpenAPI',
+    };
+    let recordId = workspace.catalogRecordId;
+    if (!recordId) {
+      const records = await this.feishuBase!.listRecords(
+        userId,
+        CATALOG_BASE_TOKEN,
+        CATALOG_TABLE_ID,
+      );
+      recordId = records.find(
+        (record) =>
+          extractText(record.record[CATALOG_FIELD.CODE]) === workspace.code ||
+          extractText(record.record[CATALOG_FIELD.BASE_TOKEN]) === base.baseToken,
+      )?.id;
+    }
+    if (recordId) {
+      await this.feishuBase!.updateRecord(
+        userId,
+        CATALOG_BASE_TOKEN,
+        CATALOG_TABLE_ID,
+        recordId,
+        fields,
+      );
+    } else {
+      recordId = await this.feishuBase!.createRecord(
+        userId,
+        CATALOG_BASE_TOKEN,
+        CATALOG_TABLE_ID,
+        fields,
+      );
+    }
+    await this.workspaceRepository!.markCatalogSynced(workspace.id, recordId);
+  }
+
+  private async retryPendingCatalogProjects(userId: string): Promise<void> {
+    const pending = await this.workspaceRepository!.listPendingCatalog(userId);
+    for (const workspace of pending.slice(0, 5)) {
+      try {
+        await this.syncCatalogProject(userId, workspace);
+      } catch (error: unknown) {
+        await this.workspaceRepository!.markCatalogPending(
+          workspace.id,
+          stringifyError(error),
+        );
+        this.logger.warn(
+          `Catalog mirror retry failed for ${workspace.id}: ${stringifyError(error)}`,
+        );
+      }
     }
   }
 
@@ -566,6 +651,7 @@ export class ProjectGraphService {
 
   async deleteProject(
     projectId: string,
+    request?: DeleteProjectWorkspaceRequest,
   ): Promise<DeleteProjectWorkspaceResponse> {
     const project = await this.resolveProject(projectId);
     if (
@@ -573,6 +659,58 @@ export class ProjectGraphService {
       project.code === 'headset-rd'
     ) {
       throw new BadRequestException('默认项目不能删除');
+    }
+    if (project.source === 'linked-base' && this.usesOpenApiStorage()) {
+      if (!request?.deleteBase || request.confirmName !== project.name) {
+        throw new BadRequestException('请输入完整项目名称确认删除');
+      }
+      const workspace = await this.workspaceRepository!.findById(project.id);
+      if (!workspace) throw new BadRequestException('项目不存在或已被移除');
+      const userId = await this.requireCurrentLarkUserId();
+      if (workspace.creatorUserId !== userId) {
+        throw new ForbiddenException('只有项目创建者可以删除项目');
+      }
+      if (!workspace.base?.baseToken) {
+        if (workspace.deletionStatus === 'deleted') {
+          return {
+            deletedProjectId: project.id,
+            deletedBase: true,
+            savedAt: formatNowTime(),
+          };
+        }
+        throw new BadRequestException('项目缺少独立 Base 绑定，无法安全删除');
+      }
+      await this.workspaceRepository!.markDeleting(project.id);
+      try {
+        await this.feishuBase!.deleteBase(userId, workspace.base.baseToken);
+        if (workspace.catalogRecordId) {
+          try {
+            await this.feishuBase!.deleteRecord(
+              userId,
+              CATALOG_BASE_TOKEN,
+              CATALOG_TABLE_ID,
+              workspace.catalogRecordId,
+            );
+          } catch (catalogError: unknown) {
+            if (!/not[_ ]found|不存在/i.test(stringifyError(catalogError))) {
+              throw catalogError;
+            }
+          }
+        }
+        await this.workspaceRepository!.markDeleted(project.id);
+        this.projectCatalogCache = undefined;
+        return {
+          deletedProjectId: project.id,
+          deletedBase: true,
+          savedAt: formatNowTime(),
+        };
+      } catch (error: unknown) {
+        await this.workspaceRepository!.markDeletionFailed(
+          project.id,
+          stringifyError(error),
+        );
+        throw error;
+      }
     }
     if (project.source !== 'shared-base') {
       throw new BadRequestException('外部 Base 项目不能从当前应用删除');
@@ -593,7 +731,11 @@ export class ProjectGraphService {
     }
     await this.pluginDeleteRecord(PROJECT_PLUGIN_ID, project.id);
     this.projectCatalogCache = undefined;
-    return { deletedProjectId: project.id, savedAt: formatNowTime() };
+    return {
+      deletedProjectId: project.id,
+      deletedBase: false,
+      savedAt: formatNowTime(),
+    };
   }
 
   async getGraph(projectId?: string): Promise<ProjectGraphResponse> {

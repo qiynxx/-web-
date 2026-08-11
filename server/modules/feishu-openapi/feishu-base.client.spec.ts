@@ -179,6 +179,51 @@ describe('FeishuBaseClient', () => {
     });
   });
 
+  it('deletes a Base and waits for the async Drive task', async () => {
+    const request = jest
+      .fn()
+      .mockResolvedValueOnce({ task_id: 'task-id' })
+      .mockResolvedValueOnce({ status: 'success' });
+    const openApi = { request } as unknown as FeishuOpenApiClient;
+    const oauth = {
+      getAccessToken: jest.fn().mockResolvedValue('access-token'),
+    } as unknown as FeishuOAuthService;
+    const client = new FeishuBaseClient(openApi, oauth);
+
+    await client.deleteBase('user-id', 'base-token');
+
+    expect(request).toHaveBeenNthCalledWith(1, 'access-token', {
+      method: 'DELETE',
+      url: '/open-apis/drive/v1/files/base-token',
+      params: { type: 'bitable', async: true },
+    });
+    expect(request).toHaveBeenNthCalledWith(2, 'access-token', {
+      method: 'GET',
+      url: '/open-apis/drive/v1/files/task_check',
+      params: { task_id: 'task-id' },
+    });
+  });
+
+  it('ensures a missing catalog Web URL field exactly once', async () => {
+    const request = jest
+      .fn()
+      .mockResolvedValueOnce({ items: [] })
+      .mockResolvedValueOnce({});
+    const openApi = { request } as unknown as FeishuOpenApiClient;
+    const oauth = {
+      getAccessToken: jest.fn().mockResolvedValue('access-token'),
+    } as unknown as FeishuOAuthService;
+    const client = new FeishuBaseClient(openApi, oauth);
+
+    await client.ensureUrlField('user-id', 'base-token', 'table-id', 'Web 可视化');
+
+    expect(request).toHaveBeenLastCalledWith('access-token', {
+      method: 'POST',
+      url: '/open-apis/base/v3/bases/base-token/tables/table-id/fields',
+      data: { field_name: 'Web 可视化', type: 15 },
+    });
+  });
+
   it('recovers a created record by its business ID when response omits ID', async () => {
     const request = jest
       .fn()

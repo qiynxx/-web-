@@ -84,6 +84,19 @@ import { Image } from '@client/src/components/ui/image';
 
 const PROJECT_LIBRARY_URL =
   'https://vcnqhq28cfdm.feishu.cn/wiki/UfSvwXb9SiKnr0kb9PjceJ93nHb?table=tblrpWm6qG55Xssv';
+const PROJECT_FOLDER_URL =
+  'https://vcnqhq28cfdm.feishu.cn/drive/folder/NbkWffuS2ldZFFdoESKcQmGpnZg';
+
+function readLinkedProjectId(): string {
+  return new URLSearchParams(window.location.search).get('projectId') ?? '';
+}
+
+function writeLinkedProjectId(projectId: string): void {
+  const url = new URL(window.location.href);
+  if (projectId) url.searchParams.set('projectId', projectId);
+  else url.searchParams.delete('projectId');
+  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+}
 
 const METRIC_ICON: Record<ProjectMetric['tone'], typeof CircleDot> = {
   neutral: CircleDot,
@@ -214,6 +227,11 @@ function ProjectGraphPage() {
   const [renameDialogOpen, setRenameDialogOpen] = useState<boolean>(false);
   const [renameProjectName, setRenameProjectName] = useState<string>('');
   const [renamingProject, setRenamingProject] = useState<boolean>(false);
+  const [deleteProjectDialogOpen, setDeleteProjectDialogOpen] =
+    useState<boolean>(false);
+  const [deleteProjectConfirmation, setDeleteProjectConfirmation] =
+    useState<string>('');
+  const [deletingProject, setDeletingProject] = useState<boolean>(false);
   const [selectedId, setSelectedId] = useState<string>('hw-gen21');
   const [selectedEdgeId, setSelectedEdgeId] = useState<string>('');
   const [laneFilter, setLaneFilter] = useState<ProjectLane | 'all'>('all');
@@ -303,7 +321,7 @@ function ProjectGraphPage() {
     setLoading(true);
     setError('');
     try {
-      const catalog = await projectGraph.listProjectWorkspaces();
+      const catalog = await projectGraph.listProjectWorkspaces(true);
       setProjects(catalog.projects);
       if (catalog.projects.length === 0) {
         setActiveProjectId('');
@@ -318,12 +336,15 @@ function ProjectGraphPage() {
         setLoading(false);
         return;
       }
+      const linkedProjectId = readLinkedProjectId();
       const storedProjectId = readActiveProjectId();
       const targetProjectId = catalog.projects.some(
-        (project) => project.id === storedProjectId,
+        (project) => project.id === linkedProjectId,
       )
-        ? storedProjectId
-        : catalog.defaultProjectId;
+        ? linkedProjectId
+        : catalog.projects.some((project) => project.id === storedProjectId)
+          ? storedProjectId
+          : catalog.defaultProjectId;
       await loadGraph(targetProjectId, false);
     } catch (loadError: unknown) {
       setError(`项目目录加载失败：${getRequestErrorMessage(loadError)}`);
@@ -346,6 +367,7 @@ function ProjectGraphPage() {
       activeProjectIdRef.current = targetProjectId;
       setActiveProjectId(targetProjectId);
       writeActiveProjectId(targetProjectId);
+      writeLinkedProjectId(targetProjectId);
       setGraph({
         ...nextGraph,
         metrics: buildUiMetrics(nextGraph.nodes),
@@ -997,6 +1019,7 @@ function ProjectGraphPage() {
     graphRequestIdRef.current += 1;
     activeProjectIdRef.current = projectId;
     writeActiveProjectId(projectId);
+    writeLinkedProjectId(projectId);
     setSelectedEdgeId('');
     setSavedAt('');
     void loadGraph(projectId);
@@ -1093,6 +1116,7 @@ function ProjectGraphPage() {
       setProjectDialogOpen(false);
       activeProjectIdRef.current = project.id;
       writeActiveProjectId(project.id);
+      writeLinkedProjectId(project.id);
       setActiveProjectId(project.id);
       setSelectedEdgeId('');
       if (feishuWindow) {
@@ -1152,6 +1176,66 @@ function ProjectGraphPage() {
       setError(`项目名称修改失败：${getRequestErrorMessage(requestError)}`);
     } finally {
       setRenamingProject(false);
+    }
+  }
+
+  function openDeleteProjectDialog(): void {
+    if (!activeProject) return;
+    setDeleteProjectConfirmation('');
+    setDeleteProjectDialogOpen(true);
+    setError('');
+  }
+
+  async function submitProjectDelete(): Promise<void> {
+    if (
+      !activeProject ||
+      deletingProject ||
+      deleteProjectConfirmation !== activeProject.name
+    ) {
+      return;
+    }
+    const deletedProjectId = activeProject.id;
+    setDeletingProject(true);
+    try {
+      await projectGraph.deleteProjectWorkspace(deletedProjectId, {
+        confirmName: activeProject.name,
+        deleteBase: true,
+      });
+      const remainingProjects = projects.filter(
+        (project) => project.id !== deletedProjectId,
+      );
+      setProjects(remainingProjects);
+      setDeleteProjectDialogOpen(false);
+      for (const key of Object.keys(baseSyncTimersRef.current)) {
+        if (key.startsWith(`${deletedProjectId}:`)) {
+          window.clearTimeout(baseSyncTimersRef.current[key]);
+          delete baseSyncTimersRef.current[key];
+          delete baseSyncPatchesRef.current[key];
+        }
+      }
+      const nextProjectId = remainingProjects[0]?.id ?? '';
+      activeProjectIdRef.current = nextProjectId;
+      writeActiveProjectId(nextProjectId);
+      writeLinkedProjectId(nextProjectId);
+      if (nextProjectId) {
+        await loadGraph(nextProjectId);
+        setSavedAt(`已删除项目“${activeProject.name}”及其飞书 Base`);
+      } else {
+        setActiveProjectId('');
+        setGraph({
+          nodes: [],
+          edges: [],
+          metrics: buildUiMetrics([]),
+          baselines: [],
+          writable: false,
+          message: '项目目录为空，请点击左侧“新建项目”创建独立飞书文档。',
+        });
+      }
+      setError('');
+    } catch (requestError: unknown) {
+      setError(`项目删除失败：${getRequestErrorMessage(requestError)}`);
+    } finally {
+      setDeletingProject(false);
     }
   }
 
@@ -1373,6 +1457,21 @@ function ProjectGraphPage() {
                 <ArrowUpRight />
                 <span>连线表</span>
               </UniversalLink>
+            </Button>
+            <Button asChild variant="outline">
+              <a href={PROJECT_FOLDER_URL} rel="noreferrer" target="_blank">
+                <FolderOpen />
+                <span>项目文件夹</span>
+              </a>
+            </Button>
+            <Button
+              className="danger-action"
+              disabled={!activeProject || deletingProject}
+              onClick={openDeleteProjectDialog}
+              variant="outline"
+            >
+              <Trash2 />
+              <span>删除项目</span>
             </Button>
             <Button
               aria-label={inspectorOpen ? '收起编辑详情' : '打开编辑详情'}
@@ -1607,6 +1706,70 @@ function ProjectGraphPage() {
                   : projectCreationStage === 'provisioning'
                     ? '正在创建飞书文档…'
                     : '创建并打开飞书'}
+              </Button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {deleteProjectDialogOpen && activeProject ? (
+        <div className="project-dialog-backdrop" role="presentation">
+          <section
+            aria-labelledby="delete-project-dialog-title"
+            aria-modal="true"
+            className="project-dialog project-delete-dialog"
+            role="dialog"
+          >
+            <div className="project-dialog-heading">
+              <div>
+                <span>危险操作</span>
+                <h2 id="delete-project-dialog-title">删除项目及飞书 Base</h2>
+              </div>
+              <button
+                disabled={deletingProject}
+                onClick={() => setDeleteProjectDialogOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <div className="project-delete-warning" role="alert">
+              <AlertTriangle />
+              <p>
+                将删除“{activeProject.name}”及其独立飞书 Base，节点、连线和看板会一起进入飞书回收站。
+              </p>
+            </div>
+            <label className="field-stack">
+              <span>输入完整项目名称确认</span>
+              <Input
+                autoFocus
+                disabled={deletingProject}
+                onChange={(event) =>
+                  setDeleteProjectConfirmation(event.target.value)
+                }
+                placeholder={activeProject.name}
+                value={deleteProjectConfirmation}
+              />
+            </label>
+            <div className="project-dialog-actions">
+              <Button
+                disabled={deletingProject}
+                onClick={() => setDeleteProjectDialogOpen(false)}
+                variant="outline"
+              >
+                取消
+              </Button>
+              <Button
+                className="danger-action"
+                disabled={
+                  deletingProject ||
+                  deleteProjectConfirmation !== activeProject.name
+                }
+                onClick={() => void submitProjectDelete()}
+                variant="outline"
+              >
+                <Trash2 />
+                {deletingProject ? '正在删除飞书 Base…' : '永久删除项目'}
               </Button>
             </div>
           </section>

@@ -5,6 +5,8 @@ import type {
   CreateProjectGraphEdgeRequest,
   CreateProjectGraphNodeRequest,
   CreateProjectWorkspaceRequest,
+  DeleteProjectWorkspaceRequest,
+  DeleteProjectWorkspaceResponse,
   DeleteProjectGraphNodeResponse,
   ProjectGraphResponse,
   ProjectWorkspace,
@@ -66,6 +68,18 @@ export async function updateProjectWorkspace(
     data: request,
   });
   return response.data as ProjectWorkspace;
+}
+
+export async function deleteProjectWorkspace(
+  projectId: string,
+  request: DeleteProjectWorkspaceRequest,
+): Promise<DeleteProjectWorkspaceResponse> {
+  const response = await axiosForBackend({
+    url: `/api/project-graph/projects/${projectId}`,
+    method: 'DELETE',
+    data: request,
+  });
+  return response.data as DeleteProjectWorkspaceResponse;
 }
 
 export async function getProjectGraph(

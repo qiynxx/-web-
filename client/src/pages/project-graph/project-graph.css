@@ -241,6 +241,29 @@
   width: 18px;
 }
 
+.project-delete-warning {
+  align-items: flex-start;
+  background: #fff1f0;
+  border: 1px solid #ffccc7;
+  border-radius: 8px;
+  color: #b42318;
+  display: flex;
+  gap: 10px;
+  line-height: 1.55;
+  padding: 12px;
+}
+
+.project-delete-warning p {
+  margin: 0;
+}
+
+.project-delete-warning svg {
+  flex: 0 0 auto;
+  height: 20px;
+  margin-top: 2px;
+  width: 20px;
+}
+
 .project-dialog-actions {
   display: flex;
   gap: 10px;

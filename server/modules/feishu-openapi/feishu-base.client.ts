@@ -80,6 +80,11 @@ function findCreatedRecordId(
   return undefined;
 }
 
+function isAlreadyDeletedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not[_ ]found|does not exist|不存在|1061001/i.test(message);
+}
+
 @Injectable()
 export class FeishuBaseClient {
   private readonly writeQueues = new Map<string, Promise<unknown>>();
@@ -317,6 +322,71 @@ export class FeishuBaseClient {
         data: { record_id_list: [recordId] },
       });
     });
+  }
+
+  async ensureUrlField(
+    userId: string,
+    baseToken: string,
+    tableId: string,
+    fieldName: string,
+  ): Promise<void> {
+    const accessToken = await this.oauth.getAccessToken(userId);
+    const existing = await this.openApi.request<{
+      items?: Array<{ field_name?: string; name?: string }>;
+      fields?: Array<{ field_name?: string; name?: string }>;
+    }>(accessToken, {
+      method: 'GET',
+      url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/fields`,
+      params: { page_size: 200 },
+    });
+    const fields = existing.items ?? existing.fields ?? [];
+    if (fields.some((field) => (field.field_name ?? field.name) === fieldName)) {
+      return;
+    }
+    await this.openApi.request<Record<string, unknown>>(accessToken, {
+      method: 'POST',
+      url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/fields`,
+      data: { field_name: fieldName, type: 15 },
+    });
+  }
+
+  async deleteBase(userId: string, baseToken: string): Promise<void> {
+    const accessToken = await this.oauth.getAccessToken(userId);
+    let taskId: string | undefined;
+    try {
+      const deleted = await this.openApi.request<{
+        task_id?: string;
+        data?: { task_id?: string };
+      }>(accessToken, {
+        method: 'DELETE',
+        url: `/open-apis/drive/v1/files/${baseToken}`,
+        params: { type: 'bitable', async: true },
+      });
+      taskId = deleted.task_id ?? deleted.data?.task_id;
+    } catch (error: unknown) {
+      if (isAlreadyDeletedError(error)) return;
+      throw error;
+    }
+    if (!taskId) return;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const task = await this.openApi.request<{
+        status?: string;
+        job_status?: string;
+        data?: { status?: string; job_status?: string };
+      }>(accessToken, {
+        method: 'GET',
+        url: '/open-apis/drive/v1/files/task_check',
+        params: { task_id: taskId },
+      });
+      const status =
+        task.status ?? task.job_status ?? task.data?.status ?? task.data?.job_status;
+      if (['success', 'succeeded', 'done', 'finished'].includes(status ?? '')) return;
+      if (['failed', 'error', 'cancelled'].includes(status ?? '')) {
+        throw new BadRequestException(`飞书 Base 删除失败: ${status}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new BadRequestException('飞书 Base 删除超时，请稍后重试');
   }
 
   async renameBase(

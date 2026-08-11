@@ -14,6 +14,7 @@ import type {
   CreateProjectGraphEdgeRequest,
   CreateProjectGraphNodeRequest,
   CreateProjectWorkspaceRequest,
+  DeleteProjectWorkspaceRequest,
   DeleteProjectWorkspaceResponse,
   DeleteProjectGraphNodeResponse,
   ProjectGraphResponse,
@@ -58,8 +59,9 @@ export class ProjectGraphController {
   @Delete('projects/:projectId')
   async deleteProject(
     @Param('projectId') projectId: string,
+    @Body() request: DeleteProjectWorkspaceRequest,
   ): Promise<DeleteProjectWorkspaceResponse> {
-    return this.projectGraphService.deleteProject(projectId);
+    return this.projectGraphService.deleteProject(projectId, request);
   }
 
   @NeedLogin()

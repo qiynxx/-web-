@@ -49,7 +49,11 @@ export class FeishuOAuthService {
 
   async hasAuthorization(userId: string): Promise<boolean> {
     const token = await this.findToken(userId);
-    return Boolean(token && token.refreshExpiresAt > Date.now());
+    return Boolean(
+      token &&
+        token.refreshExpiresAt > Date.now() &&
+        token.scope.split(/\s+/).includes('drive:drive'),
+    );
   }
 
   async getAccessToken(userId: string): Promise<string> {
