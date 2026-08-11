@@ -39,6 +39,12 @@ export class ProjectGraphController {
   }
 
   @NeedLogin()
+  @Post('projects/catalog-sync')
+  async retryCatalogSync(): Promise<{ synced: boolean }> {
+    return this.projectGraphService.retryCatalogSync();
+  }
+
+  @NeedLogin()
   @Post('projects')
   async createProject(
     @Body() request: CreateProjectWorkspaceRequest,

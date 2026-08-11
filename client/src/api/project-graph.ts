@@ -47,6 +47,14 @@ export async function listProjectWorkspaces(
   return response.data as ProjectWorkspaceListResponse;
 }
 
+export async function retryProjectCatalogSync(): Promise<{ synced: boolean }> {
+  const response = await axiosForBackend({
+    url: '/api/project-graph/projects/catalog-sync',
+    method: 'POST',
+  });
+  return response.data as { synced: boolean };
+}
+
 export async function createProjectWorkspace(
   request: CreateProjectWorkspaceRequest,
 ): Promise<ProjectWorkspace> {

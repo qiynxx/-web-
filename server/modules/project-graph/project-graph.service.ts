@@ -165,7 +165,9 @@ export class ProjectGraphService {
   ): Promise<ProjectWorkspaceListResponse> {
     if (forceRefresh && this.usesOpenApiStorage()) {
       const userId = await this.requireCurrentLarkUserId();
-      await this.retryPendingCatalogProjects(userId);
+      void this.retryPendingCatalogProjects(userId).catch((error: unknown) => {
+        this.logger.warn(`Catalog mirror retry could not start: ${stringifyError(error)}`);
+      });
     }
     const openApiProjects = this.usesOpenApiStorage()
       ? await this.workspaceRepository!.listReady()
@@ -226,6 +228,14 @@ export class ProjectGraphService {
       value,
     };
     return value;
+  }
+
+  async retryCatalogSync(): Promise<{ synced: boolean }> {
+    if (!this.usesOpenApiStorage()) return { synced: false };
+    const userId = await this.requireCurrentLarkUserId();
+    await this.retryPendingCatalogProjects(userId);
+    this.projectCatalogCache = undefined;
+    return { synced: true };
   }
 
   async createProject(
