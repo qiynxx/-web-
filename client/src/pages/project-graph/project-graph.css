@@ -221,6 +221,26 @@
   padding: 8px 10px;
 }
 
+.project-dialog-error {
+  align-items: flex-start;
+  background: #fff1f0;
+  border: 1px solid #ffccc7;
+  border-radius: 8px;
+  color: #b42318;
+  display: flex;
+  font-size: 13px;
+  gap: 8px;
+  line-height: 1.5;
+  padding: 10px 12px;
+}
+
+.project-dialog-error svg {
+  flex: 0 0 auto;
+  height: 18px;
+  margin-top: 1px;
+  width: 18px;
+}
+
 .project-dialog-actions {
   display: flex;
   gap: 10px;

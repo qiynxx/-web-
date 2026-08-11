@@ -207,6 +207,10 @@ function ProjectGraphPage() {
     description: '',
   });
   const [creatingProject, setCreatingProject] = useState<boolean>(false);
+  const [projectCreationStage, setProjectCreationStage] = useState<
+    'idle' | 'authorizing' | 'provisioning'
+  >('idle');
+  const [projectCreationError, setProjectCreationError] = useState<string>('');
   const [renameDialogOpen, setRenameDialogOpen] = useState<boolean>(false);
   const [renameProjectName, setRenameProjectName] = useState<string>('');
   const [renamingProject, setRenamingProject] = useState<boolean>(false);
@@ -997,6 +1001,8 @@ function ProjectGraphPage() {
 
   function openProjectDialog(): void {
     setProjectForm({ name: '', description: '' });
+    setProjectCreationStage('idle');
+    setProjectCreationError('');
     setProjectDialogOpen(true);
     setError('');
   }
@@ -1069,8 +1075,11 @@ function ProjectGraphPage() {
     if (!name || creatingProject) return;
     const feishuWindow = window.open('', '_blank');
     setCreatingProject(true);
+    setProjectCreationStage('authorizing');
+    setProjectCreationError('');
     try {
       await ensureFeishuAuthorization(feishuWindow);
+      setProjectCreationStage('provisioning');
       const request: CreateProjectWorkspaceRequest = {
         name,
         description: projectForm.description.trim(),
@@ -1093,9 +1102,12 @@ function ProjectGraphPage() {
       if (feishuWindow && !feishuWindow.closed) {
         feishuWindow.location.replace(PROJECT_LIBRARY_URL);
       }
-      setError(`项目创建失败：${getRequestErrorMessage(requestError)}`);
+      const message = getRequestErrorMessage(requestError);
+      setProjectCreationError(message);
+      setError(`项目创建失败：${message}`);
     } finally {
       setCreatingProject(false);
+      setProjectCreationStage('idle');
     }
   }
 
@@ -1554,6 +1566,12 @@ function ProjectGraphPage() {
                 value={projectForm.description}
               />
             </label>
+            {projectCreationError ? (
+              <div className="project-dialog-error" role="alert">
+                <ShieldAlert />
+                <span>项目创建失败：{projectCreationError}</span>
+              </div>
+            ) : null}
             <p className="project-dialog-note">
               确认后会在“硬件项目管理”下新建一个独立 Base，自动建立“项目节点”和
               “项目连接关系”两张表及按负责人分列的“人员分工看板”，并登记到
@@ -1577,7 +1595,11 @@ function ProjectGraphPage() {
                 onClick={() => void submitProjectForm()}
               >
                 <Plus />
-                {creatingProject ? '正在创建飞书文档…' : '创建并打开飞书'}
+                {projectCreationStage === 'authorizing'
+                  ? '等待飞书授权…'
+                  : projectCreationStage === 'provisioning'
+                    ? '正在创建飞书文档…'
+                    : '创建并打开飞书'}
               </Button>
             </div>
           </section>
