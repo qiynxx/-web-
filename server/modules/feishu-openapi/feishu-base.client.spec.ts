@@ -73,7 +73,7 @@ describe('FeishuBaseClient', () => {
     const request = jest
       .fn()
       .mockResolvedValueOnce({
-        items: [{ table_id: 'node-table', name: '项目节点' }],
+        tables: [{ table_id: 'node-table', table_name: '项目节点' }],
       })
       .mockResolvedValueOnce({ items: [] })
       .mockResolvedValueOnce({ table_id: 'edge-table' })

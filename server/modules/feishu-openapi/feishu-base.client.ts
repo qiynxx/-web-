@@ -252,7 +252,27 @@ export class FeishuBaseClient {
           table_id?: string;
           name?: string;
           table_name?: string;
+          table?: {
+            id?: string;
+            table_id?: string;
+            name?: string;
+            table_name?: string;
+          };
         }>;
+        tables?: Array<{
+          id?: string;
+          table_id?: string;
+          name?: string;
+          table_name?: string;
+        }>;
+        table?: {
+          items?: Array<{
+            id?: string;
+            table_id?: string;
+            name?: string;
+            table_name?: string;
+          }>;
+        };
         has_more?: boolean;
         page_token?: string;
       }>(accessToken, {
@@ -260,10 +280,29 @@ export class FeishuBaseClient {
         url: `/open-apis/base/v3/bases/${baseToken}/tables`,
         params: { page_size: 100, page_token: pageToken },
       });
-      const match = data.items?.find(
-        (table) => (table.name ?? table.table_name) === name,
-      );
-      const id = match?.id ?? match?.table_id;
+      type TableResource = {
+        id?: string;
+        table_id?: string;
+        name?: string;
+        table_name?: string;
+      };
+      type TableItem = TableResource & { table?: TableResource };
+      const tables = (data.items ??
+        data.tables ??
+        data.table?.items ??
+        []) as TableItem[];
+      const match = tables.find((table) => {
+        const resource = table.table;
+        return (
+          resource?.name ??
+          resource?.table_name ??
+          table.name ??
+          table.table_name
+        ) === name;
+      });
+      const resource = match?.table;
+      const id =
+        resource?.id ?? resource?.table_id ?? match?.id ?? match?.table_id;
       if (id) return id;
       pageToken = data.has_more ? data.page_token : undefined;
     } while (pageToken);
