@@ -221,13 +221,16 @@ export class FeishuBaseClient {
     fields: Array<Record<string, unknown>>,
   ): Promise<{ id: string }> {
     const data = await this.openApi.request<{
-      table: { id?: string; table_id?: string };
+      table?: { id?: string; table_id?: string };
+      id?: string;
+      table_id?: string;
     }>(accessToken, {
       method: 'POST',
       url: `/open-apis/base/v3/bases/${baseToken}/tables`,
       data: { name, fields },
     });
-    const id = data.table.id ?? data.table.table_id;
+    const id =
+      data.table?.id ?? data.table?.table_id ?? data.id ?? data.table_id;
     if (!id) throw new BadRequestException('飞书未返回新数据表 ID');
     return { id };
   }
@@ -251,12 +254,18 @@ export class FeishuBaseClient {
     if (!resolvedViewId) {
       const created = await this.openApi.request<{
         view?: { id?: string; view_id?: string };
+        id?: string;
+        view_id?: string;
       }>(accessToken, {
         method: 'POST',
         url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/views`,
         data: { name: '人员分工看板', type: 'kanban' },
       });
-      resolvedViewId = created.view?.id ?? created.view?.view_id;
+      resolvedViewId =
+        created.view?.id ??
+        created.view?.view_id ??
+        created.id ??
+        created.view_id;
     }
     if (!resolvedViewId) throw new BadRequestException('飞书未返回项目看板 ID');
     await this.openApi.request<Record<string, unknown>>(accessToken, {

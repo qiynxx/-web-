@@ -12,10 +12,10 @@ describe('FeishuBaseClient', () => {
         app_token: 'base-token',
         url: 'https://example.feishu.cn/base/base-token',
       })
-      .mockResolvedValueOnce({ table: { table_id: 'node-table' } })
-      .mockResolvedValueOnce({ table: { table_id: 'edge-table' } })
+      .mockResolvedValueOnce({ table_id: 'node-table' })
+      .mockResolvedValueOnce({ id: 'edge-table' })
       .mockResolvedValueOnce({ items: [] })
-      .mockResolvedValueOnce({ view: { view_id: 'board-view' } })
+      .mockResolvedValueOnce({ view_id: 'board-view' })
       .mockResolvedValueOnce({});
     const openApi = { request } as unknown as FeishuOpenApiClient;
     const oauth = {
