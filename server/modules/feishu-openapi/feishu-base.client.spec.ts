@@ -220,7 +220,11 @@ describe('FeishuBaseClient', () => {
     expect(request).toHaveBeenLastCalledWith('access-token', {
       method: 'POST',
       url: '/open-apis/base/v3/bases/base-token/tables/table-id/fields',
-      data: { field_name: 'Web 可视化', type: 15 },
+      data: {
+        name: 'Web 可视化',
+        type: 'text',
+        style: { type: 'url' },
+      },
     });
   });
 

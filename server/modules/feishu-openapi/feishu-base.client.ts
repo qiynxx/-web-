@@ -346,7 +346,7 @@ export class FeishuBaseClient {
     await this.openApi.request<Record<string, unknown>>(accessToken, {
       method: 'POST',
       url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/fields`,
-      data: { field_name: fieldName, type: 15 },
+      data: { name: fieldName, type: 'text', style: { type: 'url' } },
     });
   }
 
