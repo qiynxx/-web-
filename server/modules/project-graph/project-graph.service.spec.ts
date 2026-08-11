@@ -802,7 +802,7 @@ describe('ProjectGraphService Base channel', () => {
     const { calls, service } = createService();
 
     await service.updateNode(
-      'rec_external_node',
+      'rec_node_1',
       {
         owners: [
           { apaasUserId: '', name: '曾启渊' },
@@ -825,7 +825,7 @@ describe('ProjectGraphService Base channel', () => {
         tableId: 'tbl_node_linked',
         records: [
           {
-            id: 'rec_external_node',
+            id: 'rec_node_1',
             record: {
               负责人: '曾启渊 / 沈智伟',
               任务负责人: ['曾启渊', '沈智伟'],
@@ -843,7 +843,12 @@ describe('ProjectGraphService Base channel', () => {
     const result = await service.deleteNode('rec_node_1');
 
     expect(result.deletedNodeId).toBe('rec_node_1');
-    expect(calls.filter((call) => call.pluginId === NODE_PLUGIN_ID)).toEqual([
+    expect(
+      calls.filter(
+        (call) =>
+          call.pluginId === NODE_PLUGIN_ID && call.action === 'deleteRecords',
+      ),
+    ).toEqual([
       {
         pluginId: NODE_PLUGIN_ID,
         action: 'deleteRecords',
@@ -1133,6 +1138,35 @@ describe('ProjectGraphService Base channel', () => {
     await expect(
       service.updateNode('rec_node_1', { date: '2026-02-30' }),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects records and endpoints outside the resolved project', async () => {
+    const { calls, service } = createService();
+
+    await expect(
+      service.updateNode('rec_other_project', { title: '越界修改' }),
+    ).rejects.toThrow('node not found');
+    await expect(
+      service.deleteNode('rec_other_project'),
+    ).rejects.toThrow('node not found');
+    await expect(
+      service.createEdge({
+        source: 'rec_node_1',
+        target: 'rec_other_project',
+        label: '越界连接',
+        critical: false,
+      }),
+    ).rejects.toThrow('连接节点不属于当前项目');
+
+    expect(
+      calls.some(
+        (call) =>
+          (call.action === 'batchUpdateRecords' ||
+            call.action === 'deleteRecords' ||
+            call.action === 'batchAddRecords') &&
+          JSON.stringify(call.input).includes('rec_other_project'),
+      ),
+    ).toBe(false);
   });
 
   it('creates link fields for both edge endpoints', async () => {

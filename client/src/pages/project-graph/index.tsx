@@ -230,6 +230,8 @@ function ProjectGraphPage() {
   const baseSyncPatchesRef = useRef<
     Record<string, UpdateProjectGraphNodeRequest>
   >({});
+  const activeProjectIdRef = useRef<string>('');
+  const graphRequestIdRef = useRef<number>(0);
   const creatingNodeRef = useRef<boolean>(false);
   const deletingNodeRef = useRef<boolean>(false);
   const ownerIds = useMemo(
@@ -286,6 +288,10 @@ function ProjectGraphPage() {
   }, [ownerProfiles]);
 
   useEffect(() => {
+    activeProjectIdRef.current = activeProjectId;
+  }, [activeProjectId]);
+
+  useEffect(() => {
     void initializeProjects();
   }, []);
 
@@ -325,12 +331,15 @@ function ProjectGraphPage() {
     projectId?: string,
     manageLoading = true,
   ): Promise<void> {
+    const requestId = ++graphRequestIdRef.current;
     if (manageLoading) setLoading(true);
     setError('');
     try {
-      const targetProjectId = projectId || activeProjectId;
+      const targetProjectId = projectId || activeProjectIdRef.current;
       if (!targetProjectId) return;
       const nextGraph = await projectGraph.getProjectGraph(targetProjectId);
+      if (requestId !== graphRequestIdRef.current) return;
+      activeProjectIdRef.current = targetProjectId;
       setActiveProjectId(targetProjectId);
       writeActiveProjectId(targetProjectId);
       setGraph({
@@ -345,9 +354,10 @@ function ProjectGraphPage() {
       });
       setSelectedEdgeId('');
     } catch (loadError: unknown) {
+      if (requestId !== graphRequestIdRef.current) return;
       setError(`项目图谱数据加载失败：${getRequestErrorMessage(loadError)}`);
     } finally {
-      setLoading(false);
+      if (requestId === graphRequestIdRef.current) setLoading(false);
     }
   }
 
@@ -372,7 +382,11 @@ function ProjectGraphPage() {
       };
       persistCurrentGraph(nextGraph);
       if (nextGraph.base) {
-        queueBaseNodeSync(selectedId, patch as UpdateProjectGraphNodeRequest);
+        queueBaseNodeSync(
+          activeProjectIdRef.current,
+          selectedId,
+          patch as UpdateProjectGraphNodeRequest,
+        );
       } else {
         setSavedAt(formatSavedTime());
       }
@@ -381,33 +395,37 @@ function ProjectGraphPage() {
   }
 
   function queueBaseNodeSync(
+    projectId: string,
     nodeId: string,
     patch: UpdateProjectGraphNodeRequest,
   ): void {
-    if (!nodeId) {
+    if (!projectId || !nodeId) {
       return;
     }
+    const syncKey = `${projectId}:${nodeId}`;
 
-    window.clearTimeout(baseSyncTimersRef.current[nodeId]);
-    baseSyncPatchesRef.current[nodeId] = {
-      ...baseSyncPatchesRef.current[nodeId],
+    window.clearTimeout(baseSyncTimersRef.current[syncKey]);
+    baseSyncPatchesRef.current[syncKey] = {
+      ...baseSyncPatchesRef.current[syncKey],
       ...patch,
     };
-    baseSyncTimersRef.current[nodeId] = window.setTimeout(() => {
-      const pendingPatch = baseSyncPatchesRef.current[nodeId] ?? patch;
-      delete baseSyncPatchesRef.current[nodeId];
-      delete baseSyncTimersRef.current[nodeId];
-      void syncBaseNode(nodeId, pendingPatch);
+    baseSyncTimersRef.current[syncKey] = window.setTimeout(() => {
+      const pendingPatch = baseSyncPatchesRef.current[syncKey] ?? patch;
+      delete baseSyncPatchesRef.current[syncKey];
+      delete baseSyncTimersRef.current[syncKey];
+      void syncBaseNode(projectId, nodeId, pendingPatch);
     }, 500);
   }
 
   async function syncBaseNode(
+    projectId: string,
     nodeId: string,
     patch: UpdateProjectGraphNodeRequest,
   ): Promise<void> {
     try {
       const syncedGraph: ProjectGraphResponse =
-        await projectGraph.updateProjectNode(nodeId, patch, activeProjectId);
+        await projectGraph.updateProjectNode(nodeId, patch, projectId);
+      if (activeProjectIdRef.current !== projectId) return;
       if (!syncedGraph.writable) {
         setSavedAt('该字段未写回 Base');
         return;
@@ -415,7 +433,8 @@ function ProjectGraphPage() {
       setSavedAt(`已写回 Base ${formatSavedTime()}`);
       setError('');
     } catch {
-      setError('Base 写回失败：请确认已登录且对该多维表格有编辑权限');
+      if (activeProjectIdRef.current !== projectId) return;
+      setError('Base 写回失败：请确认飞书授权有效且对该多维表格有编辑权限');
       setSavedAt('写回失败');
     }
   }
@@ -454,6 +473,7 @@ function ProjectGraphPage() {
   }
 
   async function writeBaseNode(
+    projectId: string,
     node: ProjectGraphNode,
     previousGraph: ProjectGraphResponse,
     optimisticEdge?: ProjectGraphEdge,
@@ -468,8 +488,9 @@ function ProjectGraphPage() {
       const creation: CreateProjectGraphNodeResponse =
         await projectGraph.createProjectNode(
           payload as CreateProjectGraphNodeRequest,
-          activeProjectId,
+          projectId,
         );
+      if (activeProjectIdRef.current !== projectId) return;
       setGraph((currentGraph: ProjectGraphResponse | null) => {
         if (!currentGraph) {
           return currentGraph;
@@ -512,6 +533,7 @@ function ProjectGraphPage() {
       );
       setError('');
     } catch (requestError: unknown) {
+      if (activeProjectIdRef.current !== projectId) return;
       setGraph((currentGraph: ProjectGraphResponse | null) => {
         if (!currentGraph) {
           return previousGraph;
@@ -540,15 +562,18 @@ function ProjectGraphPage() {
   }
 
   async function removeBaseNode(
+    projectId: string,
     nodeId: string,
     previousGraph: ProjectGraphResponse,
     previousSelectedId: string,
   ): Promise<void> {
     try {
-      await projectGraph.deleteProjectNode(nodeId, activeProjectId);
+      await projectGraph.deleteProjectNode(nodeId, projectId);
+      if (activeProjectIdRef.current !== projectId) return;
       setSavedAt(`已删除节点并写回 Base ${formatSavedTime()}`);
       setError('');
     } catch (requestError: unknown) {
+      if (activeProjectIdRef.current !== projectId) return;
       setGraph(previousGraph);
       setSelectedId(previousSelectedId);
       setError(`Base 节点删除失败：${getRequestErrorMessage(requestError)}`);
@@ -558,34 +583,45 @@ function ProjectGraphPage() {
     }
   }
 
-  async function writeBaseEdge(edge: ProjectGraphEdge): Promise<void> {
+  async function writeBaseEdge(
+    projectId: string,
+    edge: ProjectGraphEdge,
+  ): Promise<void> {
     try {
       const { id: _id, ...payload } = edge;
       const nextGraph: ProjectGraphResponse =
         await projectGraph.createProjectEdge(
           payload as CreateProjectGraphEdgeRequest,
-          activeProjectId,
+          projectId,
         );
+      if (activeProjectIdRef.current !== projectId) return;
       applyServerGraph(nextGraph);
     } catch {
+      if (activeProjectIdRef.current !== projectId) return;
       setError('Base 连线创建失败：请确认已登录且对该多维表格有编辑权限');
     }
   }
 
   async function patchBaseEdge(
+    projectId: string,
     edgeId: string,
     patch: Partial<Pick<ProjectGraphEdge, 'label' | 'critical'>>,
   ): Promise<void> {
     try {
       const nextGraph: ProjectGraphResponse =
-        await projectGraph.updateProjectEdge(edgeId, patch, activeProjectId);
+        await projectGraph.updateProjectEdge(edgeId, patch, projectId);
+      if (activeProjectIdRef.current !== projectId) return;
       applyServerGraph(nextGraph);
     } catch {
+      if (activeProjectIdRef.current !== projectId) return;
       setError('Base 连线更新失败：请确认已登录且对该多维表格有编辑权限');
     }
   }
 
-  async function removeBaseEdge(edgeId: string): Promise<void> {
+  async function removeBaseEdge(
+    projectId: string,
+    edgeId: string,
+  ): Promise<void> {
     if (deletingEdgeId) return;
     const edgeLabel =
       graph?.edges.find((edge: ProjectGraphEdge) => edge.id === edgeId)
@@ -595,11 +631,13 @@ function ProjectGraphPage() {
     setSavedAt(`正在删除“${edgeLabel}”…`);
     try {
       const nextGraph: ProjectGraphResponse =
-        await projectGraph.deleteProjectEdge(edgeId, activeProjectId);
+        await projectGraph.deleteProjectEdge(edgeId, projectId);
+      if (activeProjectIdRef.current !== projectId) return;
       applyServerGraph(nextGraph);
       setSelectedEdgeId('');
       setSavedAt(`已删除“${edgeLabel}”并写回 Base ${formatSavedTime()}`);
     } catch (requestError: unknown) {
+      if (activeProjectIdRef.current !== projectId) return;
       setError(`Base 连线删除失败：${getRequestErrorMessage(requestError)}`);
       setSavedAt('连线删除失败');
     } finally {
@@ -635,7 +673,12 @@ function ProjectGraphPage() {
       setSelectedEdgeId('');
       setSavedAt('正在写回 Base…');
       setError('');
-      void writeBaseNode(nextNode, graph, nextEdge);
+      void writeBaseNode(
+        activeProjectIdRef.current,
+        nextNode,
+        graph,
+        nextEdge,
+      );
       return;
     }
 
@@ -718,7 +761,12 @@ function ProjectGraphPage() {
       setSelectedEdgeId('');
       setSavedAt('正在从 Base 删除…');
       setError('');
-      void removeBaseNode(nodeId, previousGraph, previousSelectedId);
+      void removeBaseNode(
+        activeProjectIdRef.current,
+        nodeId,
+        previousGraph,
+        previousSelectedId,
+      );
       return;
     }
 
@@ -771,7 +819,10 @@ function ProjectGraphPage() {
     setError('');
     if (graph?.base) {
       setSavedAt('正在将新连接写回 Base…');
-      void writeBaseEdge(createEdge(sourceId, targetId, label));
+      void writeBaseEdge(
+        activeProjectIdRef.current,
+        createEdge(sourceId, targetId, label),
+      );
       return;
     }
 
@@ -810,7 +861,10 @@ function ProjectGraphPage() {
 
   function addTreeEdge(targetId: string, label: string): void {
     if (graph?.base) {
-      void writeBaseEdge(createEdge(selectedId, targetId, label));
+      void writeBaseEdge(
+        activeProjectIdRef.current,
+        createEdge(selectedId, targetId, label),
+      );
       return;
     }
 
@@ -861,7 +915,7 @@ function ProjectGraphPage() {
     patch: Partial<Pick<ProjectGraphEdge, 'label' | 'critical'>>,
   ): void {
     if (graph?.base) {
-      void patchBaseEdge(edgeId, patch);
+      void patchBaseEdge(activeProjectIdRef.current, edgeId, patch);
       return;
     }
 
@@ -887,7 +941,7 @@ function ProjectGraphPage() {
 
   function deleteEdge(edgeId: string): void {
     if (graph?.base) {
-      void removeBaseEdge(edgeId);
+      void removeBaseEdge(activeProjectIdRef.current, edgeId);
       return;
     }
 
@@ -933,6 +987,8 @@ function ProjectGraphPage() {
   }
 
   function switchProject(projectId: string): void {
+    graphRequestIdRef.current += 1;
+    activeProjectIdRef.current = projectId;
     writeActiveProjectId(projectId);
     setSelectedEdgeId('');
     setSavedAt('');
@@ -950,12 +1006,43 @@ function ProjectGraphPage() {
     setProjectDialogOpen(false);
   }
 
+  async function ensureFeishuAuthorization(
+    popup: Window | null,
+  ): Promise<void> {
+    const status = await projectGraph.getFeishuOAuthStatus();
+    if (status.authorized) return;
+    const { url } = await projectGraph.getFeishuOAuthUrl();
+    if (!popup) {
+      throw new Error('浏览器阻止了飞书授权窗口，请允许此站点打开新窗口');
+    }
+    popup.location.replace(url);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        window.removeEventListener('message', receiveAuthorization);
+        reject(new Error('飞书授权等待超时，请重新创建项目'));
+      }, 10 * 60 * 1_000);
+      function receiveAuthorization(event: MessageEvent): void {
+        if (
+          event.origin !== window.location.origin ||
+          event.data?.type !== 'feishu-oauth-complete'
+        ) {
+          return;
+        }
+        window.clearTimeout(timeout);
+        window.removeEventListener('message', receiveAuthorization);
+        resolve();
+      }
+      window.addEventListener('message', receiveAuthorization);
+    });
+  }
+
   async function submitProjectForm(): Promise<void> {
     const name = projectForm.name.trim();
     if (!name || creatingProject) return;
     const feishuWindow = window.open('', '_blank');
     setCreatingProject(true);
     try {
+      await ensureFeishuAuthorization(feishuWindow);
       const request: CreateProjectWorkspaceRequest = {
         name,
         description: projectForm.description.trim(),

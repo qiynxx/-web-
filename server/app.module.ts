@@ -4,6 +4,7 @@ import { PlatformModule } from '@lark-apaas/fullstack-nestjs-core';
 
 import { GlobalExceptionFilter } from './common/filters/exception.filter';
 import { ProjectGraphModule } from './modules/project-graph/project-graph.module';
+import { FeishuOpenApiModule } from './modules/feishu-openapi/feishu-openapi.module';
 import { ViewModule } from './modules/view/view.module';
 
 @Module({
@@ -12,6 +13,7 @@ import { ViewModule } from './modules/view/view.module';
     PlatformModule.forRoot(),
     // ====== @route-section: business-modules START ======
     // Place all business modules here.Do NOT add fallback modules here.
+    FeishuOpenApiModule,
     ProjectGraphModule,
     // ====== @route-section: business-modules END ======
 

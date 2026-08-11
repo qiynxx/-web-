@@ -36,6 +36,12 @@ import {
   buildStaticNodes,
 } from './project-graph-static';
 import { LarkCliBaseClient, type LarkCliRecord } from './lark-cli-base.client';
+import {
+  FeishuBaseClient,
+  type FeishuBaseRecord,
+} from '../feishu-openapi/feishu-base.client';
+import { FeishuOAuthService } from '../feishu-openapi/feishu-oauth.service';
+import { ProjectWorkspaceRepository } from './project-workspace.repository';
 
 const NODE_PLUGIN_ID = 'project_graph_node_crud_1';
 const EDGE_PLUGIN_ID = 'project_graph_connection_bitable_crud_1';
@@ -143,11 +149,22 @@ export class ProjectGraphService {
     private readonly capabilityService: CapabilityService,
     private readonly authnService: AuthNPaasService,
     @Optional() private readonly larkCli?: LarkCliBaseClient,
+    @Optional() private readonly feishuBase?: FeishuBaseClient,
+    @Optional() private readonly oauth?: FeishuOAuthService,
+    @Optional() private readonly workspaceRepository?: ProjectWorkspaceRepository,
   ) {}
 
   async listProjects(
     forceRefresh = false,
   ): Promise<ProjectWorkspaceListResponse> {
+    const openApiProjects = this.usesOpenApiStorage()
+      ? await this.workspaceRepository!.listReady()
+      : [];
+    if (this.usesOpenApiStorage() && openApiProjects.length === 0) {
+      this.logger.warn(
+        'OpenAPI project directory is empty; using the legacy catalog until migration completes.',
+      );
+    }
     if (forceRefresh) {
       this.projectCatalogCache = undefined;
     }
@@ -160,7 +177,7 @@ export class ProjectGraphService {
     const records = this.usesLarkCliStorage()
       ? await this.larkCli!.listRecords(CATALOG_BASE_TOKEN, CATALOG_TABLE_ID)
       : await this.searchAllRecords(PROJECT_PLUGIN_ID);
-    const projects = records
+    const catalogProjects = records
       .map((record, index) => {
         const catalogProject = mapCatalogRecord(record, index);
         if (catalogProject) return catalogProject;
@@ -174,6 +191,18 @@ export class ProjectGraphService {
         (project): project is ProjectWorkspace =>
           Boolean(project?.id && project.name.trim()),
       );
+    const openApiBaseTokens = new Set(
+      openApiProjects.map((project) => project.base.baseToken),
+    );
+    const openApiIds = new Set(openApiProjects.map((project) => project.id));
+    const projects = [
+      ...openApiProjects,
+      ...catalogProjects.filter(
+        (project) =>
+          !openApiIds.has(project.id) &&
+          !openApiBaseTokens.has(project.base.baseToken),
+      ),
+    ];
     if (projects.length === 0 && !this.usesLarkCliStorage()) {
       projects.push(buildDefaultWorkspace());
     }
@@ -207,6 +236,9 @@ export class ProjectGraphService {
       )
     ) {
       throw new BadRequestException('项目名称已存在');
+    }
+    if (this.usesOpenApiStorage()) {
+      return this.createOpenApiProject({ ...request, name });
     }
     if (this.usesLarkCliStorage()) {
       return this.createIndependentProject({
@@ -295,7 +327,12 @@ export class ProjectGraphService {
     }
 
     try {
-      if (this.usesLarkCliStorage()) {
+      if (this.usesOpenApiStorage()) {
+        const userId = await this.requireCurrentLarkUserId();
+        await this.feishuBase!.renameBase(userId, project.base.baseToken, name);
+        await this.workspaceRepository!.rename(project.id, name);
+        this.projectCatalogCache = undefined;
+      } else if (this.usesLarkCliStorage()) {
         await this.larkCli!.renameBitable(project.base.baseToken, name);
         try {
           await this.larkCli!.updateRecord(
@@ -336,6 +373,101 @@ export class ProjectGraphService {
       throw new BadRequestException(
         `项目名称修改失败: ${stringifyError(error)}`,
       );
+    }
+  }
+
+  private async createOpenApiProject(
+    request: CreateProjectWorkspaceRequest,
+  ): Promise<ProjectWorkspace> {
+    if (!this.feishuBase || !this.workspaceRepository) {
+      throw new BadRequestException('飞书 OpenAPI 项目存储未初始化');
+    }
+    const userId = await this.authnService.getCurrentUserLarkUserId();
+    if (!userId) throw new ForbiddenException('无法识别当前飞书用户');
+    const workspace = await this.workspaceRepository.findOrCreate(
+      request.name.trim(),
+      request.description?.trim() ?? '',
+      userId,
+    );
+    if (
+      workspace.provisioningStatus === 'ready' &&
+      workspace.base?.baseToken &&
+      workspace.base.nodeTableId &&
+      workspace.base.edgeTableId
+    ) {
+      return {
+        id: workspace.id,
+        code: workspace.code,
+        name: workspace.name,
+        description: workspace.description,
+        status: 'planned',
+        sort: Date.now(),
+        source: 'linked-base',
+        base: workspace.base as BaseLinkConfig,
+        writable: true,
+      };
+    }
+    try {
+      const base = await this.feishuBase.provisionProjectBase(
+        userId,
+        workspace.name,
+        workspace.base ?? {},
+        buildIndependentNodeFields(),
+        buildIndependentEdgeFields,
+        async (progress) =>
+          this.workspaceRepository!.saveProvisioningProgress(
+            workspace.id,
+            progress,
+          ),
+      );
+      await this.workspaceRepository.saveBase(workspace.id, base);
+      this.projectCatalogCache = undefined;
+      try {
+        const catalogRecordId = await this.feishuBase.createRecord(
+          userId,
+          CATALOG_BASE_TOKEN,
+          CATALOG_TABLE_ID,
+          {
+            [CATALOG_FIELD.CODE]: workspace.code,
+            [CATALOG_FIELD.NAME]: workspace.name,
+            [CATALOG_FIELD.STATUS]: '规划',
+            [CATALOG_FIELD.DESCRIPTION]: workspace.description,
+            [CATALOG_FIELD.PROGRESS]: 0,
+            [CATALOG_FIELD.DOCUMENT_URL]: base.url ?? '',
+            [CATALOG_FIELD.BASE_TOKEN]: base.baseToken,
+            [CATALOG_FIELD.WIKI_NODE_TOKEN]: '',
+            [CATALOG_FIELD.NODE_TABLE_ID]: base.nodeTableId,
+            [CATALOG_FIELD.EDGE_TABLE_ID]: base.edgeTableId,
+            [CATALOG_FIELD.SOURCE]: 'Web OpenAPI',
+          },
+        );
+        await this.workspaceRepository.markCatalogSynced(
+          workspace.id,
+          catalogRecordId,
+        );
+      } catch (catalogError: unknown) {
+        this.logger.warn(
+          `Project created but catalog mirror failed: ${stringifyError(catalogError)}`,
+        );
+      }
+      return {
+        id: workspace.id,
+        code: workspace.code,
+        name: workspace.name,
+        description: workspace.description,
+        status: 'planned',
+        sort: Date.now(),
+        source: 'linked-base',
+        base,
+        writable: true,
+        updatedAt: formatNowTime(),
+      };
+    } catch (error: unknown) {
+      await this.workspaceRepository.markFailed(
+        workspace.id,
+        stringifyError(error),
+      );
+      throw error;
     }
   }
 
@@ -493,15 +625,13 @@ export class ProjectGraphService {
       throw new BadRequestException('nodeId is required');
     }
     const project = await this.resolveProject(projectId);
-    const node = isBaseRecordId(nodeId)
-      ? { id: nodeId }
-      : await this.findNodeByNodeId(nodeId, project.base);
+    const node = await this.findNodeForProject(nodeId, project);
     if (!node) throw new BadRequestException('node not found');
     await this.pluginUpdateRecord(
       NODE_PLUGIN_ID,
       node.id,
       project.source === 'linked-base'
-        ? this.usesLarkCliStorage()
+        ? this.usesDirectBaseStorage()
           ? toCliNodeFields(patch)
           : toLinkedNodeFields(patch)
         : toNodeFields(patch),
@@ -521,7 +651,7 @@ export class ProjectGraphService {
     const createdNodeId = await this.pluginAddRecord(
       NODE_PLUGIN_ID,
       project.source === 'linked-base'
-        ? this.usesLarkCliStorage()
+        ? this.usesDirectBaseStorage()
           ? toCliNewNodeFields(node)
           : toLinkedNewNodeFields(node)
         : toNewNodeFields(node, project),
@@ -540,7 +670,7 @@ export class ProjectGraphService {
       try {
         const createdEdgeId = await this.pluginAddRecord(
           EDGE_PLUGIN_ID,
-          this.usesLarkCliStorage()
+          this.usesDirectBaseStorage()
             ? toCliNewEdgeFields(edgeInput)
             : toNewEdgeFields(edgeInput, project),
           project.base,
@@ -580,14 +710,9 @@ export class ProjectGraphService {
       throw new BadRequestException('nodeId is required');
     }
     const project = await this.resolveProject(projectId);
-    let recordId = nodeId;
-    if (!isBaseRecordId(nodeId)) {
-      const node = await this.findNodeByNodeId(nodeId, project.base);
-      if (!node) {
-        throw new BadRequestException('node not found');
-      }
-      recordId = node.id;
-    }
+    const node = await this.findNodeForProject(nodeId, project);
+    if (!node) throw new BadRequestException('node not found');
+    const recordId = node.id;
     const edgeRecords = await this.searchAllRecords(
       EDGE_PLUGIN_ID,
       project.base,
@@ -619,11 +744,32 @@ export class ProjectGraphService {
       throw new BadRequestException('source and target are required');
     }
     const project = await this.resolveProject(projectId);
+    const nodeRecords = await this.searchAllRecords(NODE_PLUGIN_ID, project.base);
+    const nodeRecordIds = new Set(nodeRecords.map((record) => record.id));
+    const sourceId = resolveRecordId(
+      edge.source,
+      nodeRecords,
+      NODE_FIELD.NODE_ID,
+    );
+    const targetId = resolveRecordId(
+      edge.target,
+      nodeRecords,
+      NODE_FIELD.NODE_ID,
+    );
+    if (
+      !sourceId ||
+      !targetId ||
+      !nodeRecordIds.has(sourceId) ||
+      !nodeRecordIds.has(targetId)
+    ) {
+      throw new BadRequestException('连接节点不属于当前项目');
+    }
+    const edgeInput = { ...edge, source: sourceId, target: targetId };
     await this.pluginAddRecord(
       EDGE_PLUGIN_ID,
-      this.usesLarkCliStorage()
-        ? toCliNewEdgeFields(edge)
-        : toNewEdgeFields(edge, project),
+      this.usesDirectBaseStorage()
+        ? toCliNewEdgeFields(edgeInput)
+        : toNewEdgeFields(edgeInput, project),
       project.base,
     );
     return this.getGraph(project.id);
@@ -638,9 +784,7 @@ export class ProjectGraphService {
       throw new BadRequestException('edgeId is required');
     }
     const project = await this.resolveProject(projectId);
-    const record = isBaseRecordId(edgeId)
-      ? { id: edgeId }
-      : await this.findEdgeByEdgeId(edgeId, project.base);
+    const record = await this.findEdgeByEdgeId(edgeId, project.base);
     if (!record) throw new BadRequestException('edge not found');
     await this.pluginUpdateRecord(
       EDGE_PLUGIN_ID,
@@ -716,6 +860,16 @@ export class ProjectGraphService {
     base?: BaseLinkConfig,
     maxRecords?: number,
   ): Promise<PluginRecord[]> {
+    if (this.usesOpenApiStorage() && base) {
+      const userId = await this.requireCurrentLarkUserId();
+      const tableId =
+        pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
+      return this.feishuBase!.listRecords(
+        userId,
+        base.baseToken,
+        tableId,
+      ) as Promise<FeishuBaseRecord[]>;
+    }
     if (this.usesLarkCliStorage() && base) {
       const tableId =
         pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
@@ -754,6 +908,17 @@ export class ProjectGraphService {
     record: Record<string, unknown>,
     base?: BaseLinkConfig,
   ): Promise<string> {
+    if (this.usesOpenApiStorage() && base) {
+      const userId = await this.requireCurrentLarkUserId();
+      const tableId =
+        pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
+      return this.feishuBase!.createRecord(
+        userId,
+        base.baseToken,
+        tableId,
+        record,
+      );
+    }
     if (this.usesLarkCliStorage() && base) {
       const tableId =
         pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
@@ -778,6 +943,19 @@ export class ProjectGraphService {
     record: Record<string, unknown>,
     base?: BaseLinkConfig,
   ): Promise<void> {
+    if (this.usesOpenApiStorage() && base) {
+      const userId = await this.requireCurrentLarkUserId();
+      const tableId =
+        pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
+      await this.feishuBase!.updateRecord(
+        userId,
+        base.baseToken,
+        tableId,
+        recordId,
+        record,
+      );
+      return;
+    }
     if (this.usesLarkCliStorage() && base) {
       const tableId =
         pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
@@ -805,6 +983,18 @@ export class ProjectGraphService {
     recordId: string,
     base?: BaseLinkConfig,
   ): Promise<void> {
+    if (this.usesOpenApiStorage() && base) {
+      const userId = await this.requireCurrentLarkUserId();
+      const tableId =
+        pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
+      await this.feishuBase!.deleteRecord(
+        userId,
+        base.baseToken,
+        tableId,
+        recordId,
+      );
+      return;
+    }
     if (this.usesLarkCliStorage() && base) {
       const tableId =
         pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
@@ -867,6 +1057,27 @@ export class ProjectGraphService {
       }
       throw new BadRequestException(`Base 操作失败: ${msg}`);
     }
+  }
+
+  private usesOpenApiStorage(): boolean {
+    return (
+      process.env.PROJECT_GRAPH_STORAGE_MODE === 'feishu-openapi' &&
+      Boolean(
+        this.feishuBase &&
+          this.workspaceRepository?.isEnabled() &&
+          this.oauth,
+      )
+    );
+  }
+
+  private async requireCurrentLarkUserId(): Promise<string> {
+    const userId = await this.authnService.getCurrentUserLarkUserId();
+    if (!userId) throw new ForbiddenException('无法识别当前飞书用户');
+    return userId;
+  }
+
+  private usesDirectBaseStorage(): boolean {
+    return this.usesOpenApiStorage() || this.usesLarkCliStorage();
   }
 
   private usesLarkCliStorage(): boolean {
@@ -1091,6 +1302,21 @@ export class ProjectGraphService {
   }
 
   // --- Lookup helpers ---
+
+  private async findNodeForProject(
+    nodeId: string,
+    project: ProjectWorkspace,
+  ): Promise<PluginRecord | null> {
+    const node = await this.findNodeByNodeId(nodeId, project.base);
+    if (!node) return null;
+    if (
+      project.source === 'shared-base' &&
+      !recordLinksToProject(node, NODE_FIELD.PROJECT, project.id)
+    ) {
+      return null;
+    }
+    return node;
+  }
 
   private async findNodeByNodeId(
     nodeId: string,
@@ -1802,8 +2028,18 @@ function extractFirstLinkId(
   return ids[0] ?? null;
 }
 
-function isBaseRecordId(value: string): boolean {
-  return /^rec[0-9A-Za-z_]+$/.test(value);
+function resolveRecordId(
+  candidate: string,
+  records: PluginRecord[],
+  stableIdField: string,
+): string | null {
+  return (
+    records.find(
+      (record) =>
+        record.id === candidate ||
+        extractText(record.record[stableIdField]) === candidate,
+    )?.id ?? null
+  );
 }
 
 function normalizeProgress(value: number): number {

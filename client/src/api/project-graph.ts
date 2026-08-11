@@ -18,6 +18,22 @@ function projectParams(projectId?: string): { projectId?: string } {
   return projectId ? { projectId } : {};
 }
 
+export async function getFeishuOAuthStatus(): Promise<{ authorized: boolean }> {
+  const response = await axiosForBackend({
+    url: '/api/feishu-oauth/status',
+    method: 'GET',
+  });
+  return response.data as { authorized: boolean };
+}
+
+export async function getFeishuOAuthUrl(): Promise<{ url: string }> {
+  const response = await axiosForBackend({
+    url: '/api/feishu-oauth/authorize',
+    method: 'GET',
+  });
+  return response.data as { url: string };
+}
+
 export async function listProjectWorkspaces(
   refresh = false,
 ): Promise<ProjectWorkspaceListResponse> {
