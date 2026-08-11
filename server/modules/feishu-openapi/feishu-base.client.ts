@@ -36,22 +36,29 @@ export class FeishuBaseClient {
     let baseUrl = existing.url;
     if (!baseToken) {
       const created = await this.openApi.request<{
-        base: {
+        base?: {
           token?: string;
           base_token?: string;
           app_token?: string;
           url?: string;
         };
+        token?: string;
+        base_token?: string;
+        app_token?: string;
+        url?: string;
       }>(accessToken, {
         method: 'POST',
         url: '/open-apis/base/v3/bases',
         data: { name, folder_token: folderToken },
       });
       baseToken =
-        created.base.token ??
-        created.base.base_token ??
-        created.base.app_token;
-      baseUrl = created.base.url;
+        created.base?.token ??
+        created.base?.base_token ??
+        created.base?.app_token ??
+        created.token ??
+        created.base_token ??
+        created.app_token;
+      baseUrl = created.base?.url ?? created.url;
       if (!baseToken) {
         throw new BadRequestException('飞书未返回新 Base token');
       }
