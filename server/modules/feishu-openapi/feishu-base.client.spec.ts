@@ -12,7 +12,9 @@ describe('FeishuBaseClient', () => {
         app_token: 'base-token',
         url: 'https://example.feishu.cn/base/base-token',
       })
+      .mockResolvedValueOnce({ items: [] })
       .mockResolvedValueOnce({ table_id: 'node-table' })
+      .mockResolvedValueOnce({ items: [] })
       .mockResolvedValueOnce({ id: 'edge-table' })
       .mockResolvedValueOnce({ items: [] })
       .mockResolvedValueOnce({ view_id: 'board-view' })
@@ -58,6 +60,56 @@ describe('FeishuBaseClient', () => {
         url: 'https://example.feishu.cn/base/base-token',
       },
     ]);
+    if (previousFolderToken === undefined) {
+      delete process.env.PROJECT_BASE_FOLDER_TOKEN;
+    } else {
+      process.env.PROJECT_BASE_FOLDER_TOKEN = previousFolderToken;
+    }
+  });
+
+  it('recovers an existing table before creating the next table', async () => {
+    const previousFolderToken = process.env.PROJECT_BASE_FOLDER_TOKEN;
+    process.env.PROJECT_BASE_FOLDER_TOKEN = 'folder-token';
+    const request = jest
+      .fn()
+      .mockResolvedValueOnce({
+        items: [{ table_id: 'node-table', name: '项目节点' }],
+      })
+      .mockResolvedValueOnce({ items: [] })
+      .mockResolvedValueOnce({ table_id: 'edge-table' })
+      .mockResolvedValueOnce({
+        items: [{ view_id: 'board-view', name: '人员分工看板' }],
+      })
+      .mockResolvedValueOnce({});
+    const openApi = { request } as unknown as FeishuOpenApiClient;
+    const oauth = {
+      getAccessToken: jest.fn().mockResolvedValue('access-token'),
+    } as unknown as FeishuOAuthService;
+    const client = new FeishuBaseClient(openApi, oauth);
+    const progress: Array<Record<string, unknown>> = [];
+
+    const result = await client.provisionProjectBase(
+      'user-id',
+      'E2E project',
+      {
+        baseToken: 'base-token',
+        url: 'https://example.feishu.cn/base/base-token',
+      },
+      [],
+      () => [],
+      async (value) => {
+        progress.push(value);
+      },
+    );
+
+    expect(result.nodeTableId).toBe('node-table');
+    expect(result.edgeTableId).toBe('edge-table');
+    expect(progress[0]).toMatchObject({ nodeTableId: 'node-table' });
+    expect(
+      request.mock.calls.filter(
+        ([, config]) => config.method === 'POST' && config.url.endsWith('/tables'),
+      ),
+    ).toHaveLength(1);
     if (previousFolderToken === undefined) {
       delete process.env.PROJECT_BASE_FOLDER_TOKEN;
     } else {

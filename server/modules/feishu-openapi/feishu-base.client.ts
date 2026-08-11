@@ -66,6 +66,16 @@ export class FeishuBaseClient {
     }
     let nodeTableId = existing.nodeTableId;
     if (!nodeTableId) {
+      nodeTableId = await this.findTableId(
+        accessToken,
+        baseToken,
+        '项目节点',
+      );
+      if (nodeTableId) {
+        await onProgress({ baseToken, nodeTableId, url: baseUrl });
+      }
+    }
+    if (!nodeTableId) {
       const nodeTable = await this.createTable(
         accessToken,
         baseToken,
@@ -76,6 +86,21 @@ export class FeishuBaseClient {
       await onProgress({ baseToken, nodeTableId, url: baseUrl });
     }
     let edgeTableId = existing.edgeTableId;
+    if (!edgeTableId) {
+      edgeTableId = await this.findTableId(
+        accessToken,
+        baseToken,
+        '项目连接关系',
+      );
+      if (edgeTableId) {
+        await onProgress({
+          baseToken,
+          nodeTableId,
+          edgeTableId,
+          url: baseUrl,
+        });
+      }
+    }
     if (!edgeTableId) {
       const edgeTable = await this.createTable(
         accessToken,
@@ -212,6 +237,37 @@ export class FeishuBaseClient {
       url: `/open-apis/base/v3/bases/${baseToken}`,
       data: { name },
     });
+  }
+
+  private async findTableId(
+    accessToken: string,
+    baseToken: string,
+    name: string,
+  ): Promise<string | undefined> {
+    let pageToken: string | undefined;
+    do {
+      const data = await this.openApi.request<{
+        items?: Array<{
+          id?: string;
+          table_id?: string;
+          name?: string;
+          table_name?: string;
+        }>;
+        has_more?: boolean;
+        page_token?: string;
+      }>(accessToken, {
+        method: 'GET',
+        url: `/open-apis/base/v3/bases/${baseToken}/tables`,
+        params: { page_size: 100, page_token: pageToken },
+      });
+      const match = data.items?.find(
+        (table) => (table.name ?? table.table_name) === name,
+      );
+      const id = match?.id ?? match?.table_id;
+      if (id) return id;
+      pageToken = data.has_more ? data.page_token : undefined;
+    } while (pageToken);
+    return undefined;
   }
 
   private async createTable(
