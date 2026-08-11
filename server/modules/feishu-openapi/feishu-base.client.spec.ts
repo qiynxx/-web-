@@ -134,6 +134,33 @@ describe('FeishuBaseClient', () => {
     ).resolves.toBe('record-id');
   });
 
+  it('uses the Base v3 update_records map for record updates', async () => {
+    const request = jest.fn().mockResolvedValueOnce({});
+    const openApi = { request } as unknown as FeishuOpenApiClient;
+    const oauth = {
+      getAccessToken: jest.fn().mockResolvedValue('access-token'),
+    } as unknown as FeishuOAuthService;
+    const client = new FeishuBaseClient(openApi, oauth);
+
+    await client.updateRecord(
+      'user-id',
+      'base-token',
+      'table-id',
+      'record-id',
+      { 节点名称: 'updated name' },
+    );
+
+    expect(request).toHaveBeenCalledWith('access-token', {
+      method: 'POST',
+      url: '/open-apis/base/v3/bases/base-token/tables/table-id/records/batch_update',
+      data: {
+        update_records: {
+          'record-id': { 节点名称: 'updated name' },
+        },
+      },
+    });
+  });
+
   it('recovers a created record by its business ID when response omits ID', async () => {
     const request = jest
       .fn()

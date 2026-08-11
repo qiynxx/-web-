@@ -289,7 +289,9 @@ export class FeishuBaseClient {
         method: 'POST',
         url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/records/batch_update`,
         data: {
-          updates: [{ record_id: recordId, fields }],
+          update_records: {
+            [recordId]: fields,
+          },
         },
       });
     });
