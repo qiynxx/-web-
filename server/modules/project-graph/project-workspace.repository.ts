@@ -176,6 +176,7 @@ export class ProjectWorkspaceRepository {
       .set({
         catalogRecordId,
         catalogSyncStatus: 'synced',
+        provisioningError: null,
         updatedAt: Date.now(),
       })
       .where(eq(projectWorkspace.id, id));
