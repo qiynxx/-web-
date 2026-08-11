@@ -370,6 +370,9 @@ function ProjectGraphPage() {
   }
 
   function updateSelectedNode(patch: Partial<EditableNodePatch>): void {
+    if (creatingNodeRef.current) {
+      return;
+    }
     setGraph((currentGraph: ProjectGraphResponse | null) => {
       if (!currentGraph) {
         return currentGraph;

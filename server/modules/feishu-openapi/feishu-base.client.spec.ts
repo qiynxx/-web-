@@ -116,4 +116,47 @@ describe('FeishuBaseClient', () => {
       process.env.PROJECT_BASE_FOLDER_TOKEN = previousFolderToken;
     }
   });
+
+  it('parses a created record ID from top-level items', async () => {
+    const request = jest.fn().mockResolvedValueOnce({
+      items: [{ id: 'record-id' }],
+    });
+    const openApi = { request } as unknown as FeishuOpenApiClient;
+    const oauth = {
+      getAccessToken: jest.fn().mockResolvedValue('access-token'),
+    } as unknown as FeishuOAuthService;
+    const client = new FeishuBaseClient(openApi, oauth);
+
+    await expect(
+      client.createRecord('user-id', 'base-token', 'table-id', {
+        节点ID: 'business-node-id',
+      }),
+    ).resolves.toBe('record-id');
+  });
+
+  it('recovers a created record by its business ID when response omits ID', async () => {
+    const request = jest
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({
+        records: [
+          {
+            id: 'recovered-record-id',
+            record: { 节点ID: 'business-node-id' },
+          },
+        ],
+      });
+    const openApi = { request } as unknown as FeishuOpenApiClient;
+    const oauth = {
+      getAccessToken: jest.fn().mockResolvedValue('access-token'),
+    } as unknown as FeishuOAuthService;
+    const client = new FeishuBaseClient(openApi, oauth);
+
+    await expect(
+      client.createRecord('user-id', 'base-token', 'table-id', {
+        节点ID: 'business-node-id',
+      }),
+    ).resolves.toBe('recovered-record-id');
+    expect(request).toHaveBeenCalledTimes(2);
+  });
 });

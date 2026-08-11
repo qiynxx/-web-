@@ -151,7 +151,18 @@ export class FeishuBaseClient {
     let pageToken: string | undefined;
     do {
       const data = await this.openApi.request<{
-        items?: Array<{ record_id: string; fields: Record<string, unknown> }>;
+        items?: Array<{
+          record_id?: string;
+          id?: string;
+          fields?: Record<string, unknown>;
+          record?: Record<string, unknown>;
+        }>;
+        records?: Array<{
+          record_id?: string;
+          id?: string;
+          fields?: Record<string, unknown>;
+          record?: Record<string, unknown>;
+        }>;
         has_more?: boolean;
         page_token?: string;
       }>(accessToken, {
@@ -159,11 +170,13 @@ export class FeishuBaseClient {
         url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/records`,
         params: { page_size: 200, page_token: pageToken },
       });
+      const page = data.items ?? data.records ?? [];
       records.push(
-        ...(data.items ?? []).map((item) => ({
-          id: item.record_id,
-          record: item.fields,
-        })),
+        ...page.flatMap((item) => {
+          const id = item.record_id ?? item.id;
+          if (!id) return [];
+          return [{ id, record: item.fields ?? item.record ?? {} }];
+        }),
       );
       pageToken = data.has_more ? data.page_token : undefined;
     } while (pageToken);
@@ -179,15 +192,28 @@ export class FeishuBaseClient {
     return this.enqueueWrite(`${baseToken}:${tableId}`, async () => {
       const accessToken = await this.oauth.getAccessToken(userId);
       const data = await this.openApi.request<{
-        records?: Array<{ record_id: string }>;
+        records?: Array<{ record_id?: string; id?: string }>;
+        items?: Array<{ record_id?: string; id?: string }>;
+        record?: { record_id?: string; id?: string };
       }>(accessToken, {
         method: 'POST',
         url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/records/batch_create`,
         data: { create_records: [fields] },
       });
-      const id = data.records?.[0]?.record_id;
-      if (!id) throw new BadRequestException('飞书未返回新记录 ID');
-      return id;
+      const created = data.records?.[0] ?? data.items?.[0] ?? data.record;
+      const id = created?.record_id ?? created?.id;
+      if (id) return id;
+      const records = await this.listRecords(userId, baseToken, tableId);
+      const uniqueField = ['节点ID', '连线ID'].find(
+        (name) => typeof fields[name] === 'string' && fields[name],
+      );
+      const recovered = uniqueField
+        ? records.find(
+            (record) => record.record[uniqueField] === fields[uniqueField],
+          )?.id
+        : undefined;
+      if (!recovered) throw new BadRequestException('飞书未返回新记录 ID');
+      return recovered;
     });
   }
 
