@@ -139,12 +139,9 @@ describe('FeishuBaseClient', () => {
       .fn()
       .mockResolvedValueOnce({})
       .mockResolvedValueOnce({
-        records: [
-          {
-            id: 'recovered-record-id',
-            record: { 节点ID: 'business-node-id' },
-          },
-        ],
+        fields: ['节点ID'],
+        data: [['business-node-id']],
+        record_id_list: ['recovered-record-id'],
       });
     const openApi = { request } as unknown as FeishuOpenApiClient;
     const oauth = {

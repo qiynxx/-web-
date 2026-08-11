@@ -14,6 +14,28 @@ function collectBaseRecords(value: unknown): FeishuBaseRecord[] {
     return value.flatMap((item) => collectBaseRecords(item));
   }
   const object = value as Record<string, unknown>;
+  if (
+    Array.isArray(object.fields) &&
+    object.fields.every((field) => typeof field === 'string') &&
+    Array.isArray(object.data) &&
+    Array.isArray(object.record_id_list)
+  ) {
+    const fieldNames = object.fields as string[];
+    const rows = object.data as unknown[][];
+    const ids = object.record_id_list as unknown[];
+    return rows.flatMap((row, index) => {
+      const id = ids[index];
+      if (typeof id !== 'string' || !Array.isArray(row)) return [];
+      return [
+        {
+          id,
+          record: Object.fromEntries(
+            fieldNames.map((field, fieldIndex) => [field, row[fieldIndex]]),
+          ),
+        },
+      ];
+    });
+  }
   const fields =
     object.fields && typeof object.fields === 'object'
       ? (object.fields as Record<string, unknown>)
