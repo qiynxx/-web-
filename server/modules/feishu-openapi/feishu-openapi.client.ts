@@ -34,6 +34,23 @@ export class FeishuOpenApiClient {
       app_id: appId,
       redirect_uri: redirectUri,
       state,
+      scope: [
+        'offline_access',
+        'auth:user.id:read',
+        'base:app:create',
+        'base:app:read',
+        'base:app:update',
+        'base:table:create',
+        'base:table:read',
+        'base:field:create',
+        'base:field:read',
+        'base:view:write_only',
+        'base:view:read',
+        'base:record:create',
+        'base:record:read',
+        'base:record:update',
+        'base:record:delete',
+      ].join(' '),
     });
     return `https://accounts.feishu.cn/open-apis/authen/v1/index?${query.toString()}`;
   }
