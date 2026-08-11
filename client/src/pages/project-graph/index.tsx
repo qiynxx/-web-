@@ -1017,21 +1017,49 @@ function ProjectGraphPage() {
     }
     popup.location.replace(url);
     await new Promise<void>((resolve, reject) => {
-      const timeout = window.setTimeout(() => {
+      let settled = false;
+      let statusRequestPending = false;
+      const finish = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        window.clearInterval(statusPoll);
         window.removeEventListener('message', receiveAuthorization);
-        reject(new Error('飞书授权等待超时，请重新创建项目'));
-      }, 10 * 60 * 1_000);
-      function receiveAuthorization(event: MessageEvent): void {
-        if (
-          event.origin !== window.location.origin ||
-          event.data?.type !== 'feishu-oauth-complete'
-        ) {
+        if (error) reject(error);
+        else resolve();
+      };
+      const checkAuthorization = async (): Promise<void> => {
+        if (settled || statusRequestPending) return;
+        if (popup.closed) {
+          finish(new Error('飞书授权窗口已关闭，请重新创建项目'));
           return;
         }
-        window.clearTimeout(timeout);
-        window.removeEventListener('message', receiveAuthorization);
-        resolve();
+        statusRequestPending = true;
+        try {
+          const currentStatus = await projectGraph.getFeishuOAuthStatus();
+          if (currentStatus.authorized) finish();
+        } catch {
+          // The callback message still provides the primary completion signal.
+        } finally {
+          statusRequestPending = false;
+        }
+      };
+      function receiveAuthorization(event: MessageEvent): void {
+        if (event.origin !== window.location.origin) return;
+        if (event.data?.type === 'feishu-oauth-complete') {
+          finish();
+        } else if (event.data?.type === 'feishu-oauth-failed') {
+          finish(new Error(event.data.message || '飞书授权失败，请重试'));
+        }
       }
+      const statusPoll = window.setInterval(
+        () => void checkAuthorization(),
+        1_000,
+      );
+      const timeout = window.setTimeout(
+        () => finish(new Error('飞书授权等待超时，请重新创建项目')),
+        5 * 60 * 1_000,
+      );
       window.addEventListener('message', receiveAuthorization);
     });
   }

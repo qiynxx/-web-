@@ -31,7 +31,8 @@ export class FeishuOpenApiClient {
     const appId = this.requiredEnv('FEISHU_APP_ID');
     const redirectUri = this.requiredEnv('FEISHU_OAUTH_REDIRECT_URI');
     const query = new URLSearchParams({
-      app_id: appId,
+      client_id: appId,
+      response_type: 'code',
       redirect_uri: redirectUri,
       state,
       scope: [
@@ -52,7 +53,7 @@ export class FeishuOpenApiClient {
         'base:record:delete',
       ].join(' '),
     });
-    return `https://accounts.feishu.cn/open-apis/authen/v1/index?${query.toString()}`;
+    return `https://accounts.feishu.cn/open-apis/authen/v1/authorize?${query.toString()}`;
   }
 
   async exchangeAuthorizationCode(code: string): Promise<FeishuOAuthToken> {
@@ -137,7 +138,7 @@ export class FeishuOpenApiClient {
           message?: string;
         }
       >(
-        `${this.baseUrl}/open-apis/authen/v2/oauth/token`,
+        'https://accounts.feishu.cn/oauth/v3/token',
         {
           ...grant,
           client_id: this.requiredEnv('FEISHU_APP_ID'),
@@ -204,10 +205,17 @@ export class FeishuOpenApiClient {
         code?: number;
         msg?: string;
         message?: string;
+        error?: string;
+        error_description?: string;
       }>;
       const status = axiosError.response?.status;
       const body = axiosError.response?.data;
-      const message = body?.msg || body?.message || axiosError.message;
+      const message =
+        body?.error_description ||
+        body?.msg ||
+        body?.message ||
+        body?.error ||
+        axiosError.message;
       this.logger.error(
         JSON.stringify({
           method: axiosError.config?.method,
