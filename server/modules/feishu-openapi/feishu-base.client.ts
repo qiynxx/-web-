@@ -254,6 +254,25 @@ export class FeishuBaseClient {
     return records;
   }
 
+  async createSingleRecord(
+    userId: string,
+    baseToken: string,
+    tableId: string,
+    fields: Record<string, unknown>,
+  ): Promise<string> {
+    return this.enqueueWrite(`${baseToken}:${tableId}`, async () => {
+      const accessToken = await this.oauth.getAccessToken(userId);
+      const data = await this.openApi.request<unknown>(accessToken, {
+        method: 'POST',
+        url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/records`,
+        data: fields,
+      });
+      const id = findCreatedRecordId(data, true);
+      if (!id) throw new BadRequestException('飞书未返回新目录记录 ID');
+      return id;
+    });
+  }
+
   async createRecord(
     userId: string,
     baseToken: string,

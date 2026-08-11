@@ -179,6 +179,26 @@ describe('FeishuBaseClient', () => {
     });
   });
 
+  it('creates a catalog record through the single-record endpoint', async () => {
+    const request = jest.fn().mockResolvedValueOnce({ id: 'record-id' });
+    const openApi = { request } as unknown as FeishuOpenApiClient;
+    const oauth = {
+      getAccessToken: jest.fn().mockResolvedValue('access-token'),
+    } as unknown as FeishuOAuthService;
+    const client = new FeishuBaseClient(openApi, oauth);
+
+    await expect(
+      client.createSingleRecord('user-id', 'base-token', 'table-id', {
+        项目名称: 'Project',
+      }),
+    ).resolves.toBe('record-id');
+    expect(request).toHaveBeenCalledWith('access-token', {
+      method: 'POST',
+      url: '/open-apis/base/v3/bases/base-token/tables/table-id/records',
+      data: { 项目名称: 'Project' },
+    });
+  });
+
   it('deletes a Base and waits for the async Drive task', async () => {
     const request = jest
       .fn()

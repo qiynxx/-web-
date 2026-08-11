@@ -533,7 +533,7 @@ export class ProjectGraphService {
         fields,
       );
     } else {
-      recordId = await this.feishuBase!.createRecord(
+      recordId = await this.feishuBase!.createSingleRecord(
         userId,
         CATALOG_BASE_TOKEN,
         CATALOG_TABLE_ID,
