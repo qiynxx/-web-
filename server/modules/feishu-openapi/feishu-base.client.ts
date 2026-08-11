@@ -66,6 +66,12 @@ function findCreatedRecordId(
   }
   const object = value as Record<string, unknown>;
   if (typeof object.record_id === 'string') return object.record_id;
+  if (Array.isArray(object.record_id_list)) {
+    const id = object.record_id_list.find(
+      (recordId): recordId is string => typeof recordId === 'string',
+    );
+    if (id) return id;
+  }
   if (allowGenericId && typeof object.id === 'string') return object.id;
   for (const key of ['record', 'records', 'items', 'data']) {
     const id = findCreatedRecordId(object[key], key !== 'data');

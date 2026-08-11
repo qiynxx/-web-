@@ -134,6 +134,24 @@ describe('FeishuBaseClient', () => {
     ).resolves.toBe('record-id');
   });
 
+  it('parses a created record ID from record_id_list', async () => {
+    const request = jest.fn().mockResolvedValueOnce({
+      record_id_list: ['record-id'],
+    });
+    const openApi = { request } as unknown as FeishuOpenApiClient;
+    const oauth = {
+      getAccessToken: jest.fn().mockResolvedValue('access-token'),
+    } as unknown as FeishuOAuthService;
+    const client = new FeishuBaseClient(openApi, oauth);
+
+    await expect(
+      client.createRecord('user-id', 'base-token', 'table-id', {
+        节点ID: 'business-node-id',
+      }),
+    ).resolves.toBe('record-id');
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it('uses the Base v3 update_records map for record updates', async () => {
     const request = jest.fn().mockResolvedValueOnce({});
     const openApi = { request } as unknown as FeishuOpenApiClient;
