@@ -1088,6 +1088,10 @@ function ProjectGraphPage() {
       const project = await projectGraph.createProjectWorkspace(request);
       setProjects((currentProjects) => [...currentProjects, project]);
       setProjectDialogOpen(false);
+      activeProjectIdRef.current = project.id;
+      writeActiveProjectId(project.id);
+      setActiveProjectId(project.id);
+      setSelectedEdgeId('');
       if (feishuWindow) {
         feishuWindow.location.replace(project.base.url || PROJECT_LIBRARY_URL);
       }
