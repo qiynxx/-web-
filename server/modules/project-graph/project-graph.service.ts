@@ -500,7 +500,7 @@ export class ProjectGraphService {
       [CATALOG_FIELD.DESCRIPTION]: workspace.description,
       [CATALOG_FIELD.PROGRESS]: 0,
       [CATALOG_FIELD.DOCUMENT_URL]: base.url ?? '',
-      [CATALOG_FIELD.WEB_URL]: { text: '打开 Web 可视化', link: webUrl },
+      [CATALOG_FIELD.WEB_URL]: webUrl,
       [CATALOG_FIELD.BASE_TOKEN]: base.baseToken,
       [CATALOG_FIELD.WIKI_NODE_TOKEN]: '',
       [CATALOG_FIELD.NODE_TABLE_ID]: base.nodeTableId,
