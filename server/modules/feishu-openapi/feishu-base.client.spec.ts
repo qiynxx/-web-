@@ -119,7 +119,7 @@ describe('FeishuBaseClient', () => {
 
   it('parses a created record ID from top-level items', async () => {
     const request = jest.fn().mockResolvedValueOnce({
-      items: [{ id: 'record-id' }],
+      data: { items: [{ record_id: 'record-id' }] },
     });
     const openApi = { request } as unknown as FeishuOpenApiClient;
     const oauth = {

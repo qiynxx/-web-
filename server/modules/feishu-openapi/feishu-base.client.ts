@@ -8,6 +8,50 @@ export interface FeishuBaseRecord {
   record: Record<string, unknown>;
 }
 
+function collectBaseRecords(value: unknown): FeishuBaseRecord[] {
+  if (!value || typeof value !== 'object') return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectBaseRecords(item));
+  }
+  const object = value as Record<string, unknown>;
+  const fields =
+    object.fields && typeof object.fields === 'object'
+      ? (object.fields as Record<string, unknown>)
+      : object.record &&
+          typeof object.record === 'object' &&
+          !Array.isArray(object.record)
+        ? (object.record as Record<string, unknown>)
+        : undefined;
+  const id =
+    typeof object.record_id === 'string'
+      ? object.record_id
+      : fields && typeof object.id === 'string'
+        ? object.id
+        : undefined;
+  if (id && fields) return [{ id, record: fields }];
+  return ['items', 'records', 'record', 'data'].flatMap((key) =>
+    collectBaseRecords(object[key]),
+  );
+}
+
+function findCreatedRecordId(
+  value: unknown,
+  allowGenericId = false,
+): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  if (Array.isArray(value)) {
+    return value.map((item) => findCreatedRecordId(item, allowGenericId)).find(Boolean);
+  }
+  const object = value as Record<string, unknown>;
+  if (typeof object.record_id === 'string') return object.record_id;
+  if (allowGenericId && typeof object.id === 'string') return object.id;
+  for (const key of ['record', 'records', 'items', 'data']) {
+    const id = findCreatedRecordId(object[key], key !== 'data');
+    if (id) return id;
+  }
+  return undefined;
+}
+
 @Injectable()
 export class FeishuBaseClient {
   private readonly writeQueues = new Map<string, Promise<unknown>>();
@@ -170,14 +214,8 @@ export class FeishuBaseClient {
         url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/records`,
         params: { page_size: 200, page_token: pageToken },
       });
-      const page = data.items ?? data.records ?? [];
-      records.push(
-        ...page.flatMap((item) => {
-          const id = item.record_id ?? item.id;
-          if (!id) return [];
-          return [{ id, record: item.fields ?? item.record ?? {} }];
-        }),
-      );
+      const page = collectBaseRecords(data);
+      records.push(...page);
       pageToken = data.has_more ? data.page_token : undefined;
     } while (pageToken);
     return records;
@@ -200,8 +238,7 @@ export class FeishuBaseClient {
         url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/records/batch_create`,
         data: { create_records: [fields] },
       });
-      const created = data.records?.[0] ?? data.items?.[0] ?? data.record;
-      const id = created?.record_id ?? created?.id;
+      const id = findCreatedRecordId(data);
       if (id) return id;
       const records = await this.listRecords(userId, baseToken, tableId);
       const uniqueField = ['节点ID', '连线ID'].find(
