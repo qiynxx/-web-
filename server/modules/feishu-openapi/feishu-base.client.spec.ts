@@ -199,6 +199,106 @@ describe('FeishuBaseClient', () => {
     });
   });
 
+  it('preserves existing select options and appends missing options once', async () => {
+    const existingOptions = [
+      { name: '硬件主干', hue: 'Orange', lightness: 'Light' },
+      { name: '软件算法', hue: 'Blue', lightness: 'Light' },
+      { name: '联调测试', hue: 'Green', lightness: 'Light' },
+    ];
+    const requiredOptions = [
+      { name: '硬件主干', hue: 'Orange', lightness: 'Light' },
+      { name: '结构设计', hue: 'Yellow', lightness: 'Light' },
+      { name: '驱动固件', hue: 'Purple', lightness: 'Light' },
+      { name: '软件应用', hue: 'Blue', lightness: 'Light' },
+      { name: '算法', hue: 'Wathet', lightness: 'Light' },
+      { name: '联调测试', hue: 'Green', lightness: 'Light' },
+    ];
+    const mergedOptions = [
+      ...existingOptions,
+      ...requiredOptions.filter(
+        (required) =>
+          !existingOptions.some((existing) => existing.name === required.name),
+      ),
+    ];
+    const request = jest
+      .fn()
+      .mockResolvedValueOnce({
+        items: [
+          {
+            field_id: 'group-field',
+            field_name: '分组',
+            type: 'select',
+            multiple: false,
+            options: existingOptions,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({
+        items: [
+          {
+            field_id: 'group-field',
+            field_name: '分组',
+            type: 'select',
+            multiple: false,
+            options: mergedOptions,
+          },
+        ],
+      });
+    const openApi = { request } as unknown as FeishuOpenApiClient;
+    const oauth = {
+      getAccessToken: jest.fn().mockResolvedValue('access-token'),
+    } as unknown as FeishuOAuthService;
+    const client = new FeishuBaseClient(openApi, oauth);
+
+    await client.ensureSelectOptions(
+      'user-id',
+      'base-token',
+      'table-id',
+      '分组',
+      requiredOptions,
+    );
+    await client.ensureSelectOptions(
+      'user-id',
+      'base-token',
+      'table-id',
+      '分组',
+      requiredOptions,
+    );
+
+    expect(request).toHaveBeenNthCalledWith(2, 'access-token', {
+      method: 'PUT',
+      url: '/open-apis/base/v3/bases/base-token/tables/table-id/fields/group-field',
+      data: {
+        name: '分组',
+        type: 'select',
+        multiple: false,
+        options: mergedOptions,
+      },
+    });
+    expect(request.mock.calls.filter(([, config]) => config.method === 'PUT')).toHaveLength(
+      1,
+    );
+  });
+
+  it('renames a Base through the Drive file title endpoint', async () => {
+    const request = jest.fn().mockResolvedValueOnce({});
+    const openApi = { request } as unknown as FeishuOpenApiClient;
+    const oauth = {
+      getAccessToken: jest.fn().mockResolvedValue('access-token'),
+    } as unknown as FeishuOAuthService;
+    const client = new FeishuBaseClient(openApi, oauth);
+
+    await client.renameBase('user-id', 'base-token', 'New title');
+
+    expect(request).toHaveBeenCalledWith('access-token', {
+      method: 'PATCH',
+      url: '/open-apis/drive/v1/files/base-token',
+      params: { type: 'bitable' },
+      data: { new_title: 'New title' },
+    });
+  });
+
   it('deletes a Base and waits for the async Drive task', async () => {
     const request = jest
       .fn()

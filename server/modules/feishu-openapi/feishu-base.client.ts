@@ -343,6 +343,61 @@ export class FeishuBaseClient {
     });
   }
 
+  async ensureSelectOptions(
+    userId: string,
+    baseToken: string,
+    tableId: string,
+    fieldName: string,
+    requiredOptions: Array<Record<string, unknown> & { name: string }>,
+  ): Promise<void> {
+    const accessToken = await this.oauth.getAccessToken(userId);
+    const data = await this.openApi.request<{
+      items?: Array<{
+        id?: string;
+        field_id?: string;
+        name?: string;
+        field_name?: string;
+        type?: string;
+        multiple?: boolean;
+        options?: Array<Record<string, unknown> & { name?: string }>;
+      }>;
+      fields?: Array<{
+        id?: string;
+        field_id?: string;
+        name?: string;
+        field_name?: string;
+        type?: string;
+        multiple?: boolean;
+        options?: Array<Record<string, unknown> & { name?: string }>;
+      }>;
+    }>(accessToken, {
+      method: 'GET',
+      url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/fields`,
+      params: { page_size: 200 },
+    });
+    const field = (data.items ?? data.fields ?? []).find(
+      (item) => (item.name ?? item.field_name) === fieldName,
+    );
+    const fieldId = field?.id ?? field?.field_id;
+    if (!field || !fieldId || field.type !== 'select') return;
+    const currentOptions = field.options ?? [];
+    const existingNames = new Set(currentOptions.map((option) => option.name));
+    const missingOptions = requiredOptions.filter(
+      (option) => !existingNames.has(option.name),
+    );
+    if (missingOptions.length === 0) return;
+    await this.openApi.request<Record<string, unknown>>(accessToken, {
+      method: 'PUT',
+      url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/fields/${fieldId}`,
+      data: {
+        name: fieldName,
+        type: 'select',
+        multiple: Boolean(field.multiple),
+        options: [...currentOptions, ...missingOptions],
+      },
+    });
+  }
+
   async ensureUrlField(
     userId: string,
     baseToken: string,
@@ -415,9 +470,10 @@ export class FeishuBaseClient {
   ): Promise<void> {
     const accessToken = await this.oauth.getAccessToken(userId);
     await this.openApi.request<Record<string, unknown>>(accessToken, {
-      method: 'PUT',
-      url: `/open-apis/base/v3/bases/${baseToken}`,
-      data: { name },
+      method: 'PATCH',
+      url: `/open-apis/drive/v1/files/${baseToken}`,
+      params: { type: 'bitable' },
+      data: { new_title: name },
     });
   }
 

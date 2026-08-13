@@ -66,6 +66,10 @@ function createService(options?: {
       'rec_node_1',
     ),
     nodeRecord('rec_node_3', 'stable-3', 303, '联调测试', '硬件'),
+    nodeRecord('rec_node_structure', 'stable-structure', 606, '结构设计', '硬件'),
+    nodeRecord('rec_node_electronics', 'stable-electronics', 607, '电子电气', '硬件'),
+    nodeRecord('rec_node_driver', 'stable-driver', 608, '驱动固件', '软件'),
+    nodeRecord('rec_node_algorithm', 'stable-algorithm', 609, '算法', '算法'),
     nodeRecord(
       'rec_node_nonempty',
       'stable-nonempty',
@@ -300,6 +304,7 @@ describe('ProjectGraphService Base channel', () => {
     expect(graph.writable).toBe(true);
     expect(graph.nodes[0]).toMatchObject({
       id: 'rec_node_1',
+      lane: 'software',
       date: '2026-08-04',
       owners: [
         {
@@ -325,6 +330,17 @@ describe('ProjectGraphService Base channel', () => {
       kind: 'hardware',
       linkedIds: [],
     });
+    expect(graph.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'rec_node_structure', lane: 'structure' }),
+        expect.objectContaining({
+          id: 'rec_node_electronics',
+          lane: 'electronics',
+        }),
+        expect.objectContaining({ id: 'rec_node_driver', lane: 'driver' }),
+        expect.objectContaining({ id: 'rec_node_algorithm', lane: 'algorithm' }),
+      ]),
+    );
     expect(graph.edges.slice(1)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: 'rec_edge_2', kind: 'cross' }),
@@ -658,7 +674,7 @@ describe('ProjectGraphService Base channel', () => {
             record: expect.objectContaining({
               节点名称: '新节点',
               副标题: '副标题',
-              分组: '软件算法',
+              分组: '软件应用',
               节点类型: '软件',
               负责人ID: [303, 404],
               所属项目: [PROJECT_RECORD_ID],

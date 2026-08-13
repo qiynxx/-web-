@@ -65,8 +65,10 @@ import {
   createDefaultNode,
   createEdge,
   filterNodes,
+  LANE_DEFAULT_KIND,
   LANE_LABELS,
   laneOptions,
+  PROJECT_LANES,
   layoutGraph,
   parseCommaList,
   parseLineList,
@@ -133,8 +135,17 @@ function laneForNodeKind(
   kind: ProjectNodeKind,
   currentLane: ProjectLane,
 ): ProjectLane {
-  if (kind === 'hardware') return 'hardware';
-  if (kind === 'software' || kind === 'algorithm') return 'software';
+  if (kind === 'hardware') {
+    return ['hardware', 'structure', 'electronics'].includes(currentLane)
+      ? currentLane
+      : 'hardware';
+  }
+  if (kind === 'software') {
+    return ['driver', 'software'].includes(currentLane)
+      ? currentLane
+      : 'software';
+  }
+  if (kind === 'algorithm') return 'algorithm';
   if (kind === 'integration' || kind === 'test') return 'integration';
   return currentLane;
 }
@@ -143,15 +154,18 @@ function kindForLane(
   lane: ProjectLane,
   currentKind: ProjectNodeKind,
 ): ProjectNodeKind {
-  if (lane === 'hardware') return 'hardware';
-  if (lane === 'software') {
-    return currentKind === 'software' || currentKind === 'algorithm'
-      ? currentKind
-      : 'software';
-  }
-  return currentKind === 'integration' || currentKind === 'test'
+  const compatibleKinds: Record<ProjectLane, ProjectNodeKind[]> = {
+    hardware: ['hardware'],
+    structure: ['hardware'],
+    electronics: ['hardware'],
+    driver: ['software'],
+    software: ['software'],
+    algorithm: ['algorithm'],
+    integration: ['integration', 'test'],
+  };
+  return compatibleKinds[lane].includes(currentKind)
     ? currentKind
-    : 'test';
+    : LANE_DEFAULT_KIND[lane];
 }
 
 function projectOwnersToUsers(owners: ProjectOwner[]): User[] {
@@ -759,10 +773,18 @@ function ProjectGraphPage() {
 
     const childLane: ProjectLane =
       parentNode.lane === 'hardware'
-        ? 'software'
-        : parentNode.lane === 'software'
-          ? 'integration'
-          : parentNode.lane;
+        ? 'structure'
+        : parentNode.lane === 'structure'
+          ? 'electronics'
+          : parentNode.lane === 'electronics'
+            ? 'driver'
+            : parentNode.lane === 'driver'
+              ? 'software'
+              : parentNode.lane === 'software'
+                ? 'algorithm'
+                : parentNode.lane === 'algorithm'
+                  ? 'integration'
+                  : parentNode.lane;
     addNode(childLane, parentId);
   }
 
@@ -1414,7 +1436,7 @@ function ProjectGraphPage() {
             </div>
             <h1>{activeProject?.name ?? '未命名项目'}</h1>
             <p>
-              横向跟踪慢节奏硬件版本，纵向展开每个硬件版本下的软件算法、
+              横向跟踪慢节奏硬件版本，纵向展开结构、电子、驱动、软件、算法、
               联调测试和风险闭环。
             </p>
           </div>
@@ -2877,9 +2899,11 @@ function NodeEditor({
             }}
             value={node.lane}
           >
-            <option value="hardware">硬件主干</option>
-            <option value="software">软件算法</option>
-            <option value="integration">联调测试</option>
+          {PROJECT_LANES.map((lane) => (
+            <option key={lane} value={lane}>
+              {LANE_LABELS[lane]}
+            </option>
+          ))}
           </select>
         </label>
         <label className="field-stack">
@@ -3100,9 +3124,11 @@ function FlowEditor({
             }
             value={newLane}
           >
-            <option value="hardware">硬件主干</option>
-            <option value="software">软件算法</option>
-            <option value="integration">联调测试</option>
+          {PROJECT_LANES.map((lane) => (
+            <option key={lane} value={lane}>
+              {LANE_LABELS[lane]}
+            </option>
+          ))}
           </select>
         </label>
         <label className="field-stack">

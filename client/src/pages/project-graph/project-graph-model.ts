@@ -18,8 +18,32 @@ export const GRAPH_MAX_SCALE = 1.8;
 export const LANE_LABELS: Record<ProjectLane | 'all', string> = {
   all: '全部',
   hardware: '硬件主干',
-  software: '软件算法',
+  structure: '结构设计',
+  electronics: '电子电气',
+  driver: '驱动固件',
+  software: '软件应用',
+  algorithm: '算法',
   integration: '联调测试',
+};
+
+export const PROJECT_LANES: ProjectLane[] = [
+  'hardware',
+  'structure',
+  'electronics',
+  'driver',
+  'software',
+  'algorithm',
+  'integration',
+];
+
+export const LANE_DEFAULT_KIND: Record<ProjectLane, ProjectGraphNode['kind']> = {
+  hardware: 'hardware',
+  structure: 'hardware',
+  electronics: 'hardware',
+  driver: 'software',
+  software: 'software',
+  algorithm: 'algorithm',
+  integration: 'test',
 };
 
 export const STATUS_LABELS: Record<ProjectNodeStatus | 'all', string> = {
@@ -47,9 +71,7 @@ export const STATUS_CLASS: Record<ProjectNodeStatus, string> = {
 
 export const laneOptions: Array<ProjectLane | 'all'> = [
   'all',
-  'hardware',
-  'software',
-  'integration',
+  ...PROJECT_LANES,
 ];
 
 export const statusOptions: Array<ProjectNodeStatus | 'all'> = [
@@ -150,20 +172,23 @@ export function createDefaultNode(
   const timestamp: number = Date.now();
   const prefix: Record<ProjectLane, string> = {
     hardware: 'hw',
+    structure: 'st',
+    electronics: 'ee',
+    driver: 'drv',
     software: 'sw',
+    algorithm: 'alg',
     integration: 'it',
   };
   const title: Record<ProjectLane, string> = {
     hardware: '新硬件版本',
+    structure: '新结构版本',
+    electronics: '新电子版本',
+    driver: '新驱动版本',
     software: '新软件分支',
+    algorithm: '新算法节点',
     integration: '新联调测试',
   };
-  const kind: ProjectGraphNode['kind'] =
-    lane === 'hardware'
-      ? 'hardware'
-      : lane === 'software'
-        ? 'software'
-        : 'test';
+  const kind: ProjectGraphNode['kind'] = LANE_DEFAULT_KIND[lane];
 
   return {
     id: `${prefix[lane]}-custom-${timestamp}`,
@@ -228,7 +253,7 @@ export function buildUiMetrics(nodes: ProjectGraphNode[]): ProjectMetric[] {
     },
     {
       key: 'activeSoftware',
-      label: '进行中软件',
+      label: '进行中分支',
       value: String(activeSoftwareCount),
       tone: 'good',
     },
@@ -749,9 +774,13 @@ function compareBranchNodes(
   right: ProjectGraphNode,
 ): number {
   const laneRank: Record<ProjectLane, number> = {
-    software: 0,
-    integration: 1,
-    hardware: 2,
+    structure: 0,
+    electronics: 1,
+    driver: 2,
+    software: 3,
+    algorithm: 4,
+    integration: 5,
+    hardware: 6,
   };
   const laneDelta: number = laneRank[left.lane] - laneRank[right.lane];
   if (laneDelta !== 0) {
@@ -974,9 +1003,7 @@ function isProjectGraphEdge(value: unknown): value is ProjectGraphEdge {
 }
 
 function isProjectLane(value: unknown): value is ProjectLane {
-  return (
-    value === 'hardware' || value === 'software' || value === 'integration'
-  );
+  return PROJECT_LANES.some((lane) => lane === value);
 }
 
 function stripJsonExtension(fileName: string): string {

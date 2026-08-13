@@ -75,6 +75,16 @@ const PROJECT_BOARD_VIEW_NAME = '人员分工看板';
 
 const BASE_URL =
   'https://my.feishu.cn/base/WC3cb3acOaminMsXKbTcwPKdnMg?table=tblVIjVsxIbuk1QQ&view=vewqWl33qS';
+const PROJECT_GROUP_OPTIONS = [
+  { name: '硬件主干', hue: 'Orange', lightness: 'Light' },
+  { name: '结构设计', hue: 'Yellow', lightness: 'Light' },
+  { name: '电子电气', hue: 'Red', lightness: 'Light' },
+  { name: '驱动固件', hue: 'Purple', lightness: 'Light' },
+  { name: '软件应用', hue: 'Blue', lightness: 'Light' },
+  { name: '算法', hue: 'Wathet', lightness: 'Light' },
+  { name: '联调测试', hue: 'Green', lightness: 'Light' },
+] as const;
+
 const NODE_FIELD = {
   NAME: '节点名称',
   NODE_ID: '节点ID',
@@ -344,10 +354,21 @@ export class ProjectGraphService {
       if (this.usesOpenApiStorage()) {
         const userId = await this.requireCurrentLarkUserId();
         await this.feishuBase!.renameBase(userId, project.base.baseToken, name);
-        await this.workspaceRepository!.rename(project.id, name);
-        const renamedWorkspace = await this.workspaceRepository!.findById(project.id);
-        if (renamedWorkspace) {
-          await this.syncCatalogProject(userId, renamedWorkspace);
+        try {
+          await this.workspaceRepository!.rename(project.id, name);
+        } catch (databaseError: unknown) {
+          try {
+            await this.feishuBase!.renameBase(
+              userId,
+              project.base.baseToken,
+              project.name,
+            );
+          } catch (rollbackError: unknown) {
+            this.logger.error(
+              `Project title rollback failed: ${stringifyError(rollbackError)}`,
+            );
+          }
+          throw databaseError;
         }
         this.projectCatalogCache = undefined;
       } else if (this.usesLarkCliStorage()) {
@@ -773,6 +794,9 @@ export class ProjectGraphService {
     const project = await this.resolveProject(projectId);
     const node = await this.findNodeForProject(nodeId, project);
     if (!node) throw new BadRequestException('node not found');
+    if (patch.lane) {
+      await this.ensureProjectGroupOptions(project);
+    }
     await this.pluginUpdateRecord(
       NODE_PLUGIN_ID,
       node.id,
@@ -794,6 +818,7 @@ export class ProjectGraphService {
       throw new BadRequestException('title is required');
     }
     const project = await this.resolveProject(projectId);
+    await this.ensureProjectGroupOptions(project);
     const createdNodeId = await this.pluginAddRecord(
       NODE_PLUGIN_ID,
       project.source === 'linked-base'
@@ -997,6 +1022,20 @@ export class ProjectGraphService {
       }
     }
     return this.getGraph(project.id);
+  }
+
+  private async ensureProjectGroupOptions(
+    project: ProjectWorkspace,
+  ): Promise<void> {
+    if (!this.usesOpenApiStorage() || project.source !== 'linked-base') return;
+    const userId = await this.requireCurrentLarkUserId();
+    await this.feishuBase!.ensureSelectOptions(
+      userId,
+      project.base.baseToken,
+      project.base.nodeTableId,
+      NODE_FIELD.GROUP,
+      PROJECT_GROUP_OPTIONS.map((option) => ({ ...option })),
+    );
   }
 
   // --- Plugin Base operations ---
@@ -1663,11 +1702,7 @@ function buildIndependentNodeFields(): Array<Record<string, unknown>> {
       name: NODE_FIELD.GROUP,
       type: 'select',
       multiple: false,
-      options: [
-        { name: '硬件主干', hue: 'Orange', lightness: 'Light' },
-        { name: '软件算法', hue: 'Blue', lightness: 'Light' },
-        { name: '联调测试', hue: 'Green', lightness: 'Light' },
-      ],
+      options: PROJECT_GROUP_OPTIONS.map((option) => ({ ...option })),
     },
     {
       name: NODE_FIELD.TYPE,
@@ -2240,22 +2275,49 @@ function toProjectStatus(value: string): ProjectNodeStatus {
 
 function toProjectLane(typeValue: string, groupValue: string): ProjectLane {
   const group = groupValue.toLowerCase();
-  if (group.includes('硬件') || group.includes('hardware')) return 'hardware';
-  if (group.includes('联调') || group.includes('integration'))
-    return 'integration';
+  if (group.includes('结构') || group.includes('structure')) return 'structure';
+  if (
+    group.includes('电子') ||
+    group.includes('电气') ||
+    group.includes('electronics')
+  ) {
+    return 'electronics';
+  }
+  if (
+    group.includes('驱动') ||
+    group.includes('固件') ||
+    group.includes('driver') ||
+    group.includes('firmware')
+  ) {
+    return 'driver';
+  }
   if (group.includes('软件') || group.includes('software')) return 'software';
+  if (group.includes('算法') || group.includes('algorithm')) return 'algorithm';
+  if (group.includes('联调') || group.includes('测试') || group.includes('integration')) {
+    return 'integration';
+  }
+  if (group.includes('硬件') || group.includes('hardware')) return 'hardware';
 
   const type = typeValue.toLowerCase();
-  if (type.includes('硬件') || type.includes('hardware')) return 'hardware';
-  if (type.includes('联调') || type.includes('integration'))
+  if (type.includes('算法') || type.includes('algorithm')) return 'algorithm';
+  if (type.includes('联调') || type.includes('测试') || type.includes('integration')) {
     return 'integration';
+  }
+  if (type.includes('硬件') || type.includes('hardware')) return 'hardware';
   return 'software';
 }
 
 function toBaseGroup(lane: ProjectLane): string {
-  if (lane === 'hardware') return '硬件主干';
-  if (lane === 'integration') return '联调测试';
-  return '软件算法';
+  const labels: Record<ProjectLane, string> = {
+    hardware: '硬件主干',
+    structure: '结构设计',
+    electronics: '电子电气',
+    driver: '驱动固件',
+    software: '软件应用',
+    algorithm: '算法',
+    integration: '联调测试',
+  };
+  return labels[lane];
 }
 
 function toProjectNodeKind(
@@ -2273,11 +2335,13 @@ function toProjectNodeKind(
   if (type.includes('硬件') || type.includes('hardware')) return 'hardware';
   if (type.includes('算法') || type.includes('algorithm')) return 'algorithm';
   if (type.includes('软件') || type.includes('software')) return 'software';
-  return lane === 'hardware'
+  return lane === 'hardware' || lane === 'structure' || lane === 'electronics'
     ? 'hardware'
     : lane === 'integration'
       ? 'integration'
-      : 'software';
+      : lane === 'algorithm'
+        ? 'algorithm'
+        : 'software';
 }
 
 function toBaseNodeType(

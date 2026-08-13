@@ -7,7 +7,14 @@ export interface ProjectOwner {
   email?: string;
 }
 
-export type ProjectLane = 'hardware' | 'software' | 'integration';
+export type ProjectLane =
+  | 'hardware'
+  | 'structure'
+  | 'electronics'
+  | 'driver'
+  | 'software'
+  | 'algorithm'
+  | 'integration';
 
 export type ProjectNodeStatus =
   | 'planned'

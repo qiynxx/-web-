@@ -6,10 +6,15 @@ import {
 } from '../../server/modules/project-graph/project-graph-static';
 import {
   buildBaseTableUrl,
+  createDefaultNode,
   layoutGraph,
   calculateGraphFitScale,
   clampGraphScale,
   findAddedNode,
+  LANE_DEFAULT_KIND,
+  LANE_LABELS,
+  laneOptions,
+  PROJECT_LANES,
 } from '../../client/src/pages/project-graph/project-graph-model';
 
 describe('project-graph-static', () => {
@@ -78,6 +83,48 @@ describe('project-graph-static', () => {
         expect(typeof baseline.id).toBe('string');
         expect(typeof baseline.name).toBe('string');
       });
+    });
+  });
+
+  describe('engineering groups', () => {
+    it('exposes every group in a stable engineering order', () => {
+      expect(PROJECT_LANES).toEqual([
+        'hardware',
+        'structure',
+        'electronics',
+        'driver',
+        'software',
+        'algorithm',
+        'integration',
+      ]);
+      expect(laneOptions).toEqual(['all', ...PROJECT_LANES]);
+      expect(PROJECT_LANES.map((lane) => LANE_LABELS[lane])).toEqual([
+        '硬件主干',
+        '结构设计',
+        '电子电气',
+        '驱动固件',
+        '软件应用',
+        '算法',
+        '联调测试',
+      ]);
+    });
+
+    it('creates each group with its compatible default node type', () => {
+      const expectedKinds = {
+        hardware: 'hardware',
+        structure: 'hardware',
+        electronics: 'hardware',
+        driver: 'software',
+        software: 'software',
+        algorithm: 'algorithm',
+        integration: 'test',
+      } as const;
+
+      for (const lane of PROJECT_LANES) {
+        const node = createDefaultNode(lane, null, 0);
+        expect(node).toMatchObject({ lane, kind: expectedKinds[lane] });
+        expect(LANE_DEFAULT_KIND[lane]).toBe(expectedKinds[lane]);
+      }
     });
   });
 
