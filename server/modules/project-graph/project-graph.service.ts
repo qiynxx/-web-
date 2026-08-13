@@ -370,6 +370,22 @@ export class ProjectGraphService {
           }
           throw databaseError;
         }
+        const renamedWorkspace = await this.workspaceRepository!.findById(
+          project.id,
+        );
+        if (renamedWorkspace) {
+          try {
+            await this.syncCatalogProject(userId, renamedWorkspace);
+          } catch (catalogError: unknown) {
+            await this.workspaceRepository!.markCatalogPending(
+              project.id,
+              stringifyError(catalogError),
+            );
+            this.logger.warn(
+              `Project renamed but catalog mirror failed: ${stringifyError(catalogError)}`,
+            );
+          }
+        }
         this.projectCatalogCache = undefined;
       } else if (this.usesLarkCliStorage()) {
         await this.larkCli!.renameBitable(project.base.baseToken, name);
