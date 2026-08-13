@@ -355,8 +355,35 @@ export class ProjectGraphService {
         const userId = await this.requireCurrentLarkUserId();
         await this.feishuBase!.renameBase(userId, project.base.baseToken, name);
         try {
-          await this.workspaceRepository!.rename(project.id, name);
-        } catch (databaseError: unknown) {
+          const workspace = await this.workspaceRepository!.findById(project.id);
+          if (workspace) {
+            await this.workspaceRepository!.rename(project.id, name);
+            const renamedWorkspace = await this.workspaceRepository!.findById(
+              project.id,
+            );
+            if (renamedWorkspace) {
+              try {
+                await this.syncCatalogProject(userId, renamedWorkspace);
+              } catch (catalogError: unknown) {
+                await this.workspaceRepository!.markCatalogPending(
+                  project.id,
+                  stringifyError(catalogError),
+                );
+                this.logger.warn(
+                  `Project renamed but catalog mirror failed: ${stringifyError(catalogError)}`,
+                );
+              }
+            }
+          } else {
+            await this.feishuBase!.updateRecord(
+              userId,
+              CATALOG_BASE_TOKEN,
+              CATALOG_TABLE_ID,
+              project.id,
+              { [CATALOG_FIELD.NAME]: name },
+            );
+          }
+        } catch (catalogOrDatabaseError: unknown) {
           try {
             await this.feishuBase!.renameBase(
               userId,
@@ -368,23 +395,7 @@ export class ProjectGraphService {
               `Project title rollback failed: ${stringifyError(rollbackError)}`,
             );
           }
-          throw databaseError;
-        }
-        const renamedWorkspace = await this.workspaceRepository!.findById(
-          project.id,
-        );
-        if (renamedWorkspace) {
-          try {
-            await this.syncCatalogProject(userId, renamedWorkspace);
-          } catch (catalogError: unknown) {
-            await this.workspaceRepository!.markCatalogPending(
-              project.id,
-              stringifyError(catalogError),
-            );
-            this.logger.warn(
-              `Project renamed but catalog mirror failed: ${stringifyError(catalogError)}`,
-            );
-          }
+          throw catalogOrDatabaseError;
         }
         this.projectCatalogCache = undefined;
       } else if (this.usesLarkCliStorage()) {
