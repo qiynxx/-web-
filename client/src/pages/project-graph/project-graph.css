@@ -288,6 +288,132 @@
 .error-icon {
   color: #b42318;
 }
+.authorization-shell {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  padding: 32px;
+}
+
+.authorization-card {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #d8e4e0;
+  border-radius: 18px;
+  box-shadow: 0 28px 80px rgba(33, 57, 52, 0.14);
+  display: flex;
+  flex-direction: column;
+  padding: 40px;
+  text-align: center;
+  width: min(100%, 520px);
+}
+
+.authorization-checking {
+  color: #52616f;
+  gap: 14px;
+  padding: 32px;
+}
+
+.authorization-checking p {
+  margin: 0;
+}
+
+.authorization-mark {
+  align-items: center;
+  background: #e6f4ef;
+  border: 1px solid #c4e2d8;
+  border-radius: 16px;
+  color: #216b5d;
+  display: flex;
+  height: 58px;
+  justify-content: center;
+  margin-bottom: 18px;
+  width: 58px;
+}
+
+.authorization-mark svg {
+  height: 28px;
+  width: 28px;
+}
+
+.authorization-eyebrow {
+  color: #2f6f64;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.authorization-card h1 {
+  font-size: 28px;
+  letter-spacing: -0.02em;
+  margin: 8px 0 10px;
+}
+
+.authorization-description {
+  color: #5b6676;
+  line-height: 1.65;
+  margin: 0;
+  max-width: 430px;
+}
+
+.authorization-benefits {
+  background: #f6faf8;
+  border: 1px solid #e0ebe7;
+  border-radius: 12px;
+  display: grid;
+  gap: 11px;
+  margin: 24px 0;
+  padding: 16px;
+  text-align: left;
+  width: 100%;
+}
+
+.authorization-benefits span {
+  align-items: center;
+  color: #3f4c59;
+  display: flex;
+  font-size: 13px;
+  gap: 9px;
+}
+
+.authorization-benefits svg {
+  color: #26816f;
+  flex: 0 0 auto;
+  height: 17px;
+  width: 17px;
+}
+
+.authorization-error {
+  background: #fff3f1;
+  border: 1px solid #f2cbc5;
+  border-radius: 8px;
+  color: #a53b2d;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+.authorization-card > button {
+  min-width: 210px;
+}
+
+.authorization-card > small {
+  color: #7a8592;
+  line-height: 1.5;
+  margin-top: 14px;
+}
+
+.authorization-spinner {
+  animation: authorization-spin 0.85s linear infinite;
+}
+
+@keyframes authorization-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 .graph-header {
   align-items: flex-end;

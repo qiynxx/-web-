@@ -18,7 +18,10 @@ describe('FeishuBaseClient', () => {
       .mockResolvedValueOnce({ id: 'edge-table' })
       .mockResolvedValueOnce({ items: [] })
       .mockResolvedValueOnce({ view_id: 'board-view' })
-      .mockResolvedValueOnce({});
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({
+        permission_public: { link_share_entity: 'tenant_editable' },
+      });
     const openApi = { request } as unknown as FeishuOpenApiClient;
     const oauth = {
       getAccessToken: jest.fn().mockResolvedValue('access-token'),
@@ -60,6 +63,17 @@ describe('FeishuBaseClient', () => {
         url: 'https://example.feishu.cn/base/base-token',
       },
     ]);
+    expect(request).toHaveBeenCalledWith('access-token', {
+      method: 'PATCH',
+      url: '/open-apis/drive/v1/permissions/base-token/public',
+      params: { type: 'bitable' },
+      data: {
+        external_access: false,
+        invite_external: false,
+        link_share_entity: 'tenant_editable',
+        share_entity: 'same_tenant',
+      },
+    });
     if (previousFolderToken === undefined) {
       delete process.env.PROJECT_BASE_FOLDER_TOKEN;
     } else {
@@ -80,7 +94,10 @@ describe('FeishuBaseClient', () => {
       .mockResolvedValueOnce({
         items: [{ view_id: 'board-view', name: '人员分工看板' }],
       })
-      .mockResolvedValueOnce({});
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({
+        permission_public: { link_share_entity: 'tenant_editable' },
+      });
     const openApi = { request } as unknown as FeishuOpenApiClient;
     const oauth = {
       getAccessToken: jest.fn().mockResolvedValue('access-token'),
@@ -107,7 +124,8 @@ describe('FeishuBaseClient', () => {
     expect(progress[0]).toMatchObject({ nodeTableId: 'node-table' });
     expect(
       request.mock.calls.filter(
-        ([, config]) => config.method === 'POST' && config.url.endsWith('/tables'),
+        ([, config]) =>
+          config.method === 'POST' && config.url.endsWith('/tables'),
       ),
     ).toHaveLength(1);
     if (previousFolderToken === undefined) {
@@ -276,15 +294,13 @@ describe('FeishuBaseClient', () => {
         options: mergedOptions,
       },
     });
-    expect(request.mock.calls.filter(([, config]) => config.method === 'PUT')).toHaveLength(
-      1,
-    );
+    expect(
+      request.mock.calls.filter(([, config]) => config.method === 'PUT'),
+    ).toHaveLength(1);
   });
 
   it('serializes concurrent select option repairs without losing options', async () => {
-    let options = [
-      { name: '曾启渊', hue: 'Blue', lightness: 'Light' },
-    ];
+    let options = [{ name: '曾启渊', hue: 'Blue', lightness: 'Light' }];
     const requestOrder: string[] = [];
     const request = jest.fn(
       async (
@@ -394,7 +410,12 @@ describe('FeishuBaseClient', () => {
     } as unknown as FeishuOAuthService;
     const client = new FeishuBaseClient(openApi, oauth);
 
-    await client.ensureUrlField('user-id', 'base-token', 'table-id', 'Web 可视化');
+    await client.ensureUrlField(
+      'user-id',
+      'base-token',
+      'table-id',
+      'Web 可视化',
+    );
 
     expect(request).toHaveBeenLastCalledWith('access-token', {
       method: 'POST',

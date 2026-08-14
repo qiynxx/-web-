@@ -47,16 +47,18 @@ export class FeishuOAuthCallbackController {
         .send(
           authorizationResultPage(
             'feishu-oauth-complete',
-            '飞书授权已完成，正在创建项目，请勿关闭此窗口。',
+            '飞书授权已完成，可以返回项目管理页面。',
           ),
         );
     } catch (error: unknown) {
       const message =
         error instanceof HttpException
-          ? String(error.getResponse() instanceof Object
-              ? (error.getResponse() as { message?: unknown }).message ??
-                  error.message
-              : error.getResponse())
+          ? String(
+              error.getResponse() instanceof Object
+                ? ((error.getResponse() as { message?: unknown }).message ??
+                    error.message)
+                : error.getResponse(),
+            )
           : error instanceof Error
             ? error.message
             : '飞书授权失败';

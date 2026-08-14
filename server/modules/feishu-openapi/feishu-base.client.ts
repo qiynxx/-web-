@@ -62,7 +62,9 @@ function findCreatedRecordId(
 ): string | undefined {
   if (!value || typeof value !== 'object') return undefined;
   if (Array.isArray(value)) {
-    return value.map((item) => findCreatedRecordId(item, allowGenericId)).find(Boolean);
+    return value
+      .map((item) => findCreatedRecordId(item, allowGenericId))
+      .find(Boolean);
   }
   const object = value as Record<string, unknown>;
   if (typeof object.record_id === 'string') return object.record_id;
@@ -143,11 +145,7 @@ export class FeishuBaseClient {
     }
     let nodeTableId = existing.nodeTableId;
     if (!nodeTableId) {
-      nodeTableId = await this.findTableId(
-        accessToken,
-        baseToken,
-        '项目节点',
-      );
+      nodeTableId = await this.findTableId(accessToken, baseToken, '项目节点');
       if (nodeTableId) {
         await onProgress({ baseToken, nodeTableId, url: baseUrl });
       }
@@ -194,6 +192,17 @@ export class FeishuBaseClient {
       });
     }
     await this.ensureProjectBoard(accessToken, baseToken, nodeTableId);
+    await this.openApi.request<Record<string, unknown>>(accessToken, {
+      method: 'PATCH',
+      url: `/open-apis/drive/v1/permissions/${baseToken}/public`,
+      params: { type: 'bitable' },
+      data: {
+        external_access: false,
+        invite_external: false,
+        link_share_entity: 'tenant_editable',
+        share_entity: 'same_tenant',
+      },
+    });
     return {
       baseToken,
       nodeTableId,
@@ -434,7 +443,9 @@ export class FeishuBaseClient {
       params: { page_size: 200 },
     });
     const fields = existing.items ?? existing.fields ?? [];
-    if (fields.some((field) => (field.field_name ?? field.name) === fieldName)) {
+    if (
+      fields.some((field) => (field.field_name ?? field.name) === fieldName)
+    ) {
       return;
     }
     await this.openApi.request<Record<string, unknown>>(accessToken, {
@@ -473,8 +484,12 @@ export class FeishuBaseClient {
         params: { task_id: taskId },
       });
       const status =
-        task.status ?? task.job_status ?? task.data?.status ?? task.data?.job_status;
-      if (['success', 'succeeded', 'done', 'finished'].includes(status ?? '')) return;
+        task.status ??
+        task.job_status ??
+        task.data?.status ??
+        task.data?.job_status;
+      if (['success', 'succeeded', 'done', 'finished'].includes(status ?? ''))
+        return;
       if (['failed', 'error', 'cancelled'].includes(status ?? '')) {
         throw new BadRequestException(`飞书 Base 删除失败: ${status}`);
       }
@@ -552,11 +567,11 @@ export class FeishuBaseClient {
       const match = tables.find((table) => {
         const resource = table.table;
         return (
-          resource?.name ??
-          resource?.table_name ??
-          table.name ??
-          table.table_name
-        ) === name;
+          (resource?.name ??
+            resource?.table_name ??
+            table.name ??
+            table.table_name) === name
+        );
       });
       const resource = match?.table;
       const id =
@@ -600,9 +615,7 @@ export class FeishuBaseClient {
       url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/views`,
       params: { page_size: 100 },
     });
-    let viewId = existing.items?.find(
-      (view) => view.name === '人员分工看板',
-    );
+    let viewId = existing.items?.find((view) => view.name === '人员分工看板');
     let resolvedViewId = viewId?.id ?? viewId?.view_id;
     if (!resolvedViewId) {
       const created = await this.openApi.request<{
@@ -630,7 +643,10 @@ export class FeishuBaseClient {
     });
   }
 
-  private enqueueWrite<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  private enqueueWrite<T>(
+    key: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const previous = this.writeQueues.get(key) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(operation);
     this.writeQueues.set(

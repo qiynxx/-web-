@@ -100,7 +100,11 @@ function writeLinkedProjectId(projectId: string): void {
   const url = new URL(window.location.href);
   if (projectId) url.searchParams.set('projectId', projectId);
   else url.searchParams.delete('projectId');
-  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+  window.history.replaceState(
+    null,
+    '',
+    `${url.pathname}${url.search}${url.hash}`,
+  );
 }
 
 const METRIC_ICON: Record<ProjectMetric['tone'], typeof CircleDot> = {
@@ -232,6 +236,10 @@ function ProjectGraphPage() {
   const [inspectorOpen, setInspectorOpen] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>('');
+  const [authorizationStage, setAuthorizationStage] = useState<
+    'checking' | 'required' | 'authorizing' | 'authorized' | 'error'
+  >('checking');
+  const [authorizationError, setAuthorizationError] = useState<string>('');
   const [savedAt, setSavedAt] = useState<string>('');
   const [creatingNode, setCreatingNode] = useState<boolean>(false);
   const [deletingEdgeId, setDeletingEdgeId] = useState<string>('');
@@ -301,8 +309,47 @@ function ProjectGraphPage() {
   }, [activeProjectId]);
 
   useEffect(() => {
-    void initializeProjects();
+    void initializeApplication();
   }, []);
+
+  async function initializeApplication(): Promise<void> {
+    setAuthorizationStage('checking');
+    setAuthorizationError('');
+    setLoading(true);
+    try {
+      const status = await projectGraph.getFeishuOAuthStatus();
+      if (!status.authorized) {
+        setAuthorizationStage('required');
+        setLoading(false);
+        return;
+      }
+      setAuthorizationStage('authorized');
+      await initializeProjects();
+    } catch (authorizationStatusError: unknown) {
+      setAuthorizationStage('error');
+      setAuthorizationError(
+        `授权状态检查失败：${getRequestErrorMessage(authorizationStatusError)}`,
+      );
+      setLoading(false);
+    }
+  }
+  async function authorizeApplication(): Promise<void> {
+    if (authorizationStage === 'authorizing') return;
+    const popup = window.open('', '_blank');
+    setAuthorizationStage('authorizing');
+    setAuthorizationError('');
+    try {
+      await ensureFeishuAuthorization(popup);
+      if (popup && !popup.closed) popup.close();
+      setAuthorizationStage('authorized');
+      await initializeProjects();
+    } catch (authorizationRequestError: unknown) {
+      if (popup && !popup.closed) popup.close();
+      setAuthorizationStage('required');
+      setAuthorizationError(getRequestErrorMessage(authorizationRequestError));
+      setLoading(false);
+    }
+  }
 
   async function initializeProjects(): Promise<void> {
     setLoading(true);
@@ -690,12 +737,7 @@ function ProjectGraphPage() {
       setSelectedEdgeId('');
       setSavedAt('正在写回 Base…');
       setError('');
-      void writeBaseNode(
-        activeProjectIdRef.current,
-        nextNode,
-        graph,
-        nextEdge,
-      );
+      void writeBaseNode(activeProjectIdRef.current, nextNode, graph, nextEdge);
       return;
     }
 
@@ -1059,7 +1101,7 @@ function ProjectGraphPage() {
       const checkAuthorization = async (): Promise<void> => {
         if (settled || statusRequestPending) return;
         if (popup.closed) {
-          finish(new Error('飞书授权窗口已关闭，请重新创建项目'));
+          finish(new Error('飞书授权窗口已关闭，请重新授权'));
           return;
         }
         statusRequestPending = true;
@@ -1085,7 +1127,7 @@ function ProjectGraphPage() {
         1_000,
       );
       const timeout = window.setTimeout(
-        () => finish(new Error('飞书授权等待超时，请重新创建项目')),
+        () => finish(new Error('飞书授权等待超时，请重新授权')),
         5 * 60 * 1_000,
       );
       window.addEventListener('message', receiveAuthorization);
@@ -1295,6 +1337,81 @@ function ProjectGraphPage() {
     graph?.base?.url,
     graph?.base?.edgeTableId,
   );
+
+  if (authorizationStage === 'checking') {
+    return (
+      <main className="graph-shell authorization-shell">
+        <section className="authorization-card authorization-checking">
+          <LoaderCircle className="authorization-spinner" />
+          <p>正在检查飞书授权状态</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (authorizationStage !== 'authorized') {
+    const authorizationFailed = authorizationStage === 'error';
+    const authorizing = authorizationStage === 'authorizing';
+    return (
+      <main className="graph-shell authorization-shell">
+        <section className="authorization-card">
+          <div className="authorization-mark">
+            <GitBranch />
+          </div>
+          <span className="authorization-eyebrow">飞书项目协作</span>
+          <h1>授权后开始管理项目</h1>
+          <p className="authorization-description">
+            系统将使用你的飞书身份读取项目
+            Base，并把节点、负责人和进度修改实时写回。
+          </p>
+          <div className="authorization-benefits">
+            <span>
+              <CheckCircle2 />
+              一次授权，后续自动登录
+            </span>
+            <span>
+              <CheckCircle2 />
+              企业成员共享同一份项目数据
+            </span>
+            <span>
+              <CheckCircle2 />
+              数据保留在飞书 Base，不复制到个人空间
+            </span>
+          </div>
+          {authorizationError ? (
+            <p className="authorization-error" role="alert">
+              {authorizationError}
+            </p>
+          ) : null}
+          <Button
+            disabled={authorizing}
+            onClick={() =>
+              authorizationFailed
+                ? void initializeApplication()
+                : void authorizeApplication()
+            }
+            size="lg"
+          >
+            {authorizing ? (
+              <LoaderCircle className="authorization-spinner" />
+            ) : authorizationFailed ? (
+              <RefreshCw />
+            ) : (
+              <ArrowUpRight />
+            )}
+            {authorizing
+              ? '等待飞书授权...'
+              : authorizationFailed
+                ? '重新检查'
+                : '一键授权并进入'}
+          </Button>
+          <small>
+            仅向当前企业成员开放；不会向互联网匿名用户开放项目数据。
+          </small>
+        </section>
+      </main>
+    );
+  }
 
   if (loading && !graph) {
     return (
@@ -1732,7 +1849,8 @@ function ProjectGraphPage() {
             <div className="project-delete-warning" role="alert">
               <AlertTriangle />
               <p>
-                将删除“{activeProject.name}”及其独立飞书 Base，节点、连线和看板会一起进入飞书回收站。
+                将删除“{activeProject.name}”及其独立飞书
+                Base，节点、连线和看板会一起进入飞书回收站。
               </p>
             </div>
             <label className="field-stack">
@@ -2880,11 +2998,11 @@ function NodeEditor({
             }}
             value={node.lane}
           >
-          {PROJECT_LANES.map((lane) => (
-            <option key={lane} value={lane}>
-              {LANE_LABELS[lane]}
-            </option>
-          ))}
+            {PROJECT_LANES.map((lane) => (
+              <option key={lane} value={lane}>
+                {LANE_LABELS[lane]}
+              </option>
+            ))}
           </select>
         </label>
         <label className="field-stack">
@@ -3105,11 +3223,11 @@ function FlowEditor({
             }
             value={newLane}
           >
-          {PROJECT_LANES.map((lane) => (
-            <option key={lane} value={lane}>
-              {LANE_LABELS[lane]}
-            </option>
-          ))}
+            {PROJECT_LANES.map((lane) => (
+              <option key={lane} value={lane}>
+                {LANE_LABELS[lane]}
+              </option>
+            ))}
           </select>
         </label>
         <label className="field-stack">
