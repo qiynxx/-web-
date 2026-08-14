@@ -36,7 +36,6 @@ import { projectGraph } from '@client/src/api';
 import { UserSelect } from '@client/src/components/business-ui/user-select';
 import { useUsersByIds } from '@client/src/components/business-ui/api/users/queries';
 import { userInfoToUser } from '@client/src/components/business-ui/user-select/utils';
-import { getI18nText } from '@client/src/components/business-ui/utils/user';
 import type { User } from '@client/src/components/business-ui/types/user';
 import type {
   ProjectBaseline,
@@ -80,6 +79,10 @@ import {
   type EditableNodePatch,
   type GraphLayout,
 } from './project-graph-model';
+import {
+  projectOwnersToUsers,
+  usersToProjectOwners,
+} from './project-owner-select';
 import './project-graph.css';
 import { UniversalLink } from '@lark-apaas/client-toolkit/components/UniversalLink';
 import { Image } from '@client/src/components/ui/image';
@@ -166,36 +169,6 @@ function kindForLane(
   return compatibleKinds[lane].includes(currentKind)
     ? currentKind
     : LANE_DEFAULT_KIND[lane];
-}
-
-function projectOwnersToUsers(owners: ProjectOwner[]): User[] {
-  return owners
-    .filter((owner) => Boolean(owner.apaasUserId))
-    .map((owner) => ({
-      user_id: owner.apaasUserId,
-      larkUserId: owner.openId,
-      name: owner.name || '未知用户',
-      avatar: owner.avatar,
-      email: owner.email,
-    }));
-}
-
-function usersToProjectOwners(users: User[]): ProjectOwner[] {
-  return users
-    .filter((user) => Boolean(user.user_id))
-    .map((user) => {
-      const larkIdentifier = user.larkUserId || undefined;
-      return {
-        apaasUserId: String(user.user_id),
-        openId: larkIdentifier?.startsWith('ou_') ? larkIdentifier : undefined,
-        larkUserId: larkIdentifier?.startsWith('ou_')
-          ? undefined
-          : larkIdentifier,
-        name: getI18nText(user.name) || '未知用户',
-        avatar: user.avatar,
-        email: user.email,
-      };
-    });
 }
 
 function getRequestErrorMessage(error: unknown): string {
