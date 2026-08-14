@@ -4,6 +4,9 @@ import type {
   CapabilityService,
 } from '@lark-apaas/fullstack-nestjs-core';
 import type { LarkCliBaseClient } from './lark-cli-base.client';
+import type { FeishuBaseClient } from '../feishu-openapi/feishu-base.client';
+import type { FeishuOAuthService } from '../feishu-openapi/feishu-oauth.service';
+import type { ProjectWorkspaceRepository } from './project-workspace.repository';
 import { ProjectGraphService } from './project-graph.service';
 
 const NODE_PLUGIN_ID = 'project_graph_node_crud_1';
@@ -292,6 +295,99 @@ function createCliService() {
     larkCli,
     listRecords,
     service: new ProjectGraphService(capabilityService, authnService, larkCli),
+  };
+}
+
+function createOpenApiService(options?: { failOwnerOptions?: boolean }) {
+  const callOrder: string[] = [];
+  const project = {
+    id: 'rec_openapi_project',
+    code: 'openapi-project',
+    name: 'OpenAPI 项目',
+    description: '独立 Base',
+    status: 'active' as const,
+    source: 'linked-base' as const,
+    sort: 1,
+    writable: true,
+    updatedAt: '2026-08-13T00:00:00.000Z',
+    base: {
+      baseToken: 'base_openapi',
+      nodeTableId: 'tbl_node_openapi',
+      edgeTableId: 'tbl_edge_openapi',
+    },
+  };
+  const nodeRecords = [
+    {
+      id: 'rec_openapi_node',
+      record: {
+        节点名称: 'OpenAPI 节点',
+        节点ID: 'openapi-node',
+        分组: '软件应用',
+        节点类型: '软件',
+        状态: '推进中',
+        负责人: '曾启渊',
+        任务负责人: ['曾启渊'],
+        进度: 50,
+        日期: Date.UTC(2026, 7, 13),
+      },
+    },
+  ];
+  const ensureSelectOptions = jest.fn(
+    async (
+      _userId: string,
+      _baseToken: string,
+      _tableId: string,
+      fieldName: string,
+    ) => {
+      callOrder.push(`ensure:${fieldName}`);
+      if (options?.failOwnerOptions && fieldName === '任务负责人') {
+        throw new Error('owner option update failed');
+      }
+    },
+  );
+  const updateRecord = jest.fn(async () => {
+    callOrder.push('update');
+  });
+  const createRecord = jest.fn(async () => {
+    callOrder.push('create');
+    return 'rec_openapi_created';
+  });
+  const listRecords = jest.fn(
+    async (_userId: string, _baseToken: string, tableId: string) =>
+      tableId === 'tbl_node_openapi' ? nodeRecords : [],
+  );
+  const feishuBase = {
+    ensureSelectOptions,
+    updateRecord,
+    createRecord,
+    listRecords,
+  } as unknown as FeishuBaseClient;
+  const workspaceRepository = {
+    isEnabled: () => true,
+    listReady: jest.fn(async () => [project]),
+  } as unknown as ProjectWorkspaceRepository;
+  const capabilityService = {
+    load: () => ({
+      call: async () => ({ hasMore: false, records: [] }),
+    }),
+  } as unknown as CapabilityService;
+  const authnService = {
+    getCurrentUserLarkUserId: jest.fn(async () => 'user-id'),
+    getBatchLarkUserIds: jest.fn(async () => []),
+  } as unknown as AuthNPaasService;
+  return {
+    callOrder,
+    createRecord,
+    ensureSelectOptions,
+    updateRecord,
+    service: new ProjectGraphService(
+      capabilityService,
+      authnService,
+      undefined,
+      feishuBase,
+      {} as FeishuOAuthService,
+      workspaceRepository,
+    ),
   };
 }
 
@@ -1238,5 +1334,181 @@ describe('ProjectGraphService Base channel', () => {
     await expect(service.getGraph()).rejects.toBeInstanceOf(
       BadRequestException,
     );
+  });
+
+  describe('OpenAPI owner option repair', () => {
+    const originalStorageMode = process.env.PROJECT_GRAPH_STORAGE_MODE;
+
+    beforeAll(() => {
+      process.env.PROJECT_GRAPH_STORAGE_MODE = 'feishu-openapi';
+    });
+
+    afterAll(() => {
+      if (originalStorageMode === undefined) {
+        delete process.env.PROJECT_GRAPH_STORAGE_MODE;
+      } else {
+        process.env.PROJECT_GRAPH_STORAGE_MODE = originalStorageMode;
+      }
+    });
+
+    it('repairs unique owner options before updating both owner fields', async () => {
+      const {
+        callOrder,
+        ensureSelectOptions,
+        service,
+        updateRecord,
+      } = createOpenApiService();
+
+      await service.updateNode(
+        'rec_openapi_node',
+        {
+          owners: [
+            { apaasUserId: '1', name: ' 殷雄伟 ' },
+            { apaasUserId: '2', name: '殷雄伟' },
+            { apaasUserId: '3', name: '曾启渊' },
+          ],
+        },
+        'rec_openapi_project',
+      );
+
+      expect(callOrder.slice(0, 2)).toEqual(['ensure:任务负责人', 'update']);
+      expect(ensureSelectOptions).toHaveBeenCalledWith(
+        'user-id',
+        'base_openapi',
+        'tbl_node_openapi',
+        '任务负责人',
+        [
+          { name: '殷雄伟', hue: 'Blue', lightness: 'Light' },
+          { name: '曾启渊', hue: 'Blue', lightness: 'Light' },
+        ],
+      );
+      expect(updateRecord).toHaveBeenCalledWith(
+        'user-id',
+        'base_openapi',
+        'tbl_node_openapi',
+        'rec_openapi_node',
+        {
+          负责人: '殷雄伟 / 曾启渊',
+          任务负责人: ['殷雄伟', '曾启渊'],
+        },
+      );
+    });
+
+    it('clears owner fields without changing schema options', async () => {
+      const { ensureSelectOptions, service, updateRecord } =
+        createOpenApiService();
+
+      await service.updateNode(
+        'rec_openapi_node',
+        { owners: [] },
+        'rec_openapi_project',
+      );
+
+      expect(ensureSelectOptions).not.toHaveBeenCalled();
+      expect(updateRecord).toHaveBeenCalledWith(
+        'user-id',
+        'base_openapi',
+        'tbl_node_openapi',
+        'rec_openapi_node',
+        { 负责人: '', 任务负责人: [] },
+      );
+    });
+
+    it('does not repair options for unrelated node updates', async () => {
+      const { ensureSelectOptions, service, updateRecord } =
+        createOpenApiService();
+
+      await service.updateNode(
+        'rec_openapi_node',
+        { title: '新标题' },
+        'rec_openapi_project',
+      );
+
+      expect(ensureSelectOptions).not.toHaveBeenCalled();
+      expect(updateRecord).toHaveBeenCalledWith(
+        'user-id',
+        'base_openapi',
+        'tbl_node_openapi',
+        'rec_openapi_node',
+        { 节点名称: '新标题' },
+      );
+    });
+
+    it('repairs owner options before creating a node', async () => {
+      const { callOrder, createRecord, ensureSelectOptions, service } =
+        createOpenApiService();
+
+      await service.createNode(
+        {
+          title: '新节点',
+          lane: 'software',
+          kind: 'software',
+          status: 'planned',
+          owners: [{ apaasUserId: '1', name: '殷雄伟' }],
+          progress: 0,
+          date: '2026-08-13',
+          x: 0,
+          y: 0,
+          linkedIds: [],
+        },
+        'rec_openapi_project',
+      );
+
+      expect(callOrder).toEqual([
+        'ensure:分组',
+        'ensure:任务负责人',
+        'create',
+      ]);
+      expect(ensureSelectOptions).toHaveBeenLastCalledWith(
+        'user-id',
+        'base_openapi',
+        'tbl_node_openapi',
+        '任务负责人',
+        [{ name: '殷雄伟', hue: 'Blue', lightness: 'Light' }],
+      );
+      expect(createRecord).toHaveBeenCalledWith(
+        'user-id',
+        'base_openapi',
+        'tbl_node_openapi',
+        expect.objectContaining({
+          负责人: '殷雄伟',
+          任务负责人: ['殷雄伟'],
+        }),
+      );
+    });
+
+    it('does not write records when owner option repair fails', async () => {
+      const { createRecord, service, updateRecord } = createOpenApiService({
+        failOwnerOptions: true,
+      });
+
+      await expect(
+        service.updateNode(
+          'rec_openapi_node',
+          { owners: [{ apaasUserId: '1', name: '殷雄伟' }] },
+          'rec_openapi_project',
+        ),
+      ).rejects.toThrow('owner option update failed');
+      expect(updateRecord).not.toHaveBeenCalled();
+
+      await expect(
+        service.createNode(
+          {
+            title: '失败节点',
+            lane: 'software',
+            kind: 'software',
+            status: 'planned',
+            owners: [{ apaasUserId: '1', name: '殷雄伟' }],
+            progress: 0,
+            date: '2026-08-13',
+            x: 0,
+            y: 0,
+            linkedIds: [],
+          },
+          'rec_openapi_project',
+        ),
+      ).rejects.toThrow('owner option update failed');
+      expect(createRecord).not.toHaveBeenCalled();
+    });
   });
 });

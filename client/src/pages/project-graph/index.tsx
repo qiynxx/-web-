@@ -476,9 +476,9 @@ function ProjectGraphPage() {
       }
       setSavedAt(`已写回 Base ${formatSavedTime()}`);
       setError('');
-    } catch {
+    } catch (syncError: unknown) {
       if (activeProjectIdRef.current !== projectId) return;
-      setError('Base 写回失败：请确认飞书授权有效且对该多维表格有编辑权限');
+      setError(`Base 写回失败：${getRequestErrorMessage(syncError)}`);
       setSavedAt('写回失败');
     }
   }

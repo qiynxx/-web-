@@ -824,6 +824,9 @@ export class ProjectGraphService {
     if (patch.lane) {
       await this.ensureProjectGroupOptions(project);
     }
+    if (patch.owners !== undefined) {
+      await this.ensureProjectOwnerOptions(project, patch.owners);
+    }
     await this.pluginUpdateRecord(
       NODE_PLUGIN_ID,
       node.id,
@@ -846,6 +849,7 @@ export class ProjectGraphService {
     }
     const project = await this.resolveProject(projectId);
     await this.ensureProjectGroupOptions(project);
+    await this.ensureProjectOwnerOptions(project, node.owners ?? []);
     const createdNodeId = await this.pluginAddRecord(
       NODE_PLUGIN_ID,
       project.source === 'linked-base'
@@ -1062,6 +1066,27 @@ export class ProjectGraphService {
       project.base.nodeTableId,
       NODE_FIELD.GROUP,
       PROJECT_GROUP_OPTIONS.map((option) => ({ ...option })),
+    );
+  }
+
+  private async ensureProjectOwnerOptions(
+    project: ProjectWorkspace,
+    owners: ProjectOwner[],
+  ): Promise<void> {
+    if (!this.usesOpenApiStorage() || project.source !== 'linked-base') return;
+    const ownerNames = normalizedOwnerNames(owners);
+    if (ownerNames.length === 0) return;
+    const userId = await this.requireCurrentLarkUserId();
+    await this.feishuBase!.ensureSelectOptions(
+      userId,
+      project.base.baseToken,
+      project.base.nodeTableId,
+      NODE_FIELD.TASK_OWNER,
+      ownerNames.map((name) => ({
+        name,
+        hue: 'Blue',
+        lightness: 'Light',
+      })),
     );
   }
 
@@ -1848,6 +1873,11 @@ function buildIndependentEdgeFields(
 }
 
 // --- Field builders ---
+function normalizedOwnerNames(owners: ProjectOwner[]): string[] {
+  return [
+    ...new Set(owners.map((owner) => owner.name.trim()).filter(Boolean)),
+  ];
+}
 
 function toNodeFields(
   patch: UpdateProjectGraphNodeRequest,
@@ -1912,9 +1942,7 @@ function toLinkedNodeFields(
   // Their node tables intentionally do not contain the shared-Base 父节点 field.
   delete fields[NODE_FIELD.PARENT];
   if (patch.owners !== undefined) {
-    const ownerNames = patch.owners
-      .map((owner) => owner.name.trim())
-      .filter(Boolean);
+    const ownerNames = normalizedOwnerNames(patch.owners);
     fields[NODE_FIELD.LEGACY_OWNER] = ownerNames.join(' / ');
     fields[NODE_FIELD.TASK_OWNER] = ownerNames;
   }
@@ -1976,9 +2004,7 @@ function toCliNewNodeFields(
 function toLinkedNewNodeFields(
   node: CreateProjectGraphNodeRequest,
 ): Record<string, unknown> {
-  const ownerNames = (node.owners ?? [])
-    .map((owner) => owner.name.trim())
-    .filter(Boolean);
+  const ownerNames = normalizedOwnerNames(node.owners ?? []);
   return {
     [NODE_FIELD.NAME]: node.title,
     [NODE_FIELD.NODE_ID]: `node-${Date.now()}`,

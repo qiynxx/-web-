@@ -350,6 +350,26 @@ export class FeishuBaseClient {
     fieldName: string,
     requiredOptions: Array<Record<string, unknown> & { name: string }>,
   ): Promise<void> {
+    return this.enqueueWrite(
+      `schema:${baseToken}:${tableId}:${fieldName}`,
+      () =>
+        this.ensureSelectOptionsUnlocked(
+          userId,
+          baseToken,
+          tableId,
+          fieldName,
+          requiredOptions,
+        ),
+    );
+  }
+
+  private async ensureSelectOptionsUnlocked(
+    userId: string,
+    baseToken: string,
+    tableId: string,
+    fieldName: string,
+    requiredOptions: Array<Record<string, unknown> & { name: string }>,
+  ): Promise<void> {
     const accessToken = await this.oauth.getAccessToken(userId);
     const data = await this.openApi.request<{
       items?: Array<{

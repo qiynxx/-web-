@@ -281,6 +281,65 @@ describe('FeishuBaseClient', () => {
     );
   });
 
+  it('serializes concurrent select option repairs without losing options', async () => {
+    let options = [
+      { name: '曾启渊', hue: 'Blue', lightness: 'Light' },
+    ];
+    const requestOrder: string[] = [];
+    const request = jest.fn(
+      async (
+        _accessToken: string,
+        config: { method: string; data?: { options?: typeof options } },
+      ) => {
+        requestOrder.push(config.method);
+        if (config.method === 'GET') {
+          return {
+            items: [
+              {
+                field_id: 'owner-field',
+                field_name: '任务负责人',
+                type: 'select',
+                multiple: true,
+                options: options.map((option) => ({ ...option })),
+              },
+            ],
+          };
+        }
+        options = config.data?.options ?? options;
+        return {};
+      },
+    );
+    const openApi = { request } as unknown as FeishuOpenApiClient;
+    const oauth = {
+      getAccessToken: jest.fn().mockResolvedValue('access-token'),
+    } as unknown as FeishuOAuthService;
+    const client = new FeishuBaseClient(openApi, oauth);
+
+    await Promise.all([
+      client.ensureSelectOptions(
+        'user-id',
+        'base-token',
+        'table-id',
+        '任务负责人',
+        [{ name: '殷雄伟', hue: 'Blue', lightness: 'Light' }],
+      ),
+      client.ensureSelectOptions(
+        'user-id',
+        'base-token',
+        'table-id',
+        '任务负责人',
+        [{ name: '罗汉斌', hue: 'Blue', lightness: 'Light' }],
+      ),
+    ]);
+
+    expect(requestOrder).toEqual(['GET', 'PUT', 'GET', 'PUT']);
+    expect(options.map((option) => option.name)).toEqual([
+      '曾启渊',
+      '殷雄伟',
+      '罗汉斌',
+    ]);
+  });
+
   it('renames a Base through the Drive file title endpoint', async () => {
     const request = jest.fn().mockResolvedValueOnce({});
     const openApi = { request } as unknown as FeishuOpenApiClient;
