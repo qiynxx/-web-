@@ -10,7 +10,12 @@ import {
   type PostgresJsDatabase,
 } from '@lark-apaas/nestjs-datapaas';
 import { eq } from 'drizzle-orm';
-import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHmac,
+  randomBytes,
+} from 'crypto';
 import { feishuOAuthToken } from '@server/database/project-storage.schema';
 import type { FeishuOAuthToken } from './feishu-openapi.client';
 import { FeishuOpenApiClient } from './feishu-openapi.client';
@@ -32,32 +37,28 @@ export class FeishuOAuthService {
     private readonly db?: PostgresJsDatabase,
   ) {}
 
-  createAuthorizationUrl(userId: string): string {
-    return this.openApi.buildAuthorizationUrl(this.createState(userId));
+  createAuthorizationUrl(accountId: string): string {
+    return this.openApi.buildAuthorizationUrl(this.createState(accountId));
   }
 
   async completeAuthorization(code: string, state: string): Promise<string> {
-    const userId = this.verifyState(state);
+    const accountId = this.verifyState(state);
     const token = await this.openApi.exchangeAuthorizationCode(code);
-    const identity = await this.openApi.getCurrentUser(token.accessToken);
-    if (identity.userId !== userId) {
-      throw new UnauthorizedException('飞书授权账号与当前妙搭账号不一致');
-    }
-    await this.storeToken(userId, token);
-    return userId;
+    await this.storeToken(accountId, token);
+    return accountId;
   }
 
-  async hasAuthorization(userId: string): Promise<boolean> {
-    const token = await this.findToken(userId);
+  async hasAuthorization(accountId: string): Promise<boolean> {
+    const token = await this.findToken(accountId);
     return Boolean(
       token &&
-        token.refreshExpiresAt > Date.now() &&
-        token.scope.split(/\s+/).includes('drive:drive'),
+      token.refreshExpiresAt > Date.now() &&
+      token.scope.split(/\s+/).includes('drive:drive'),
     );
   }
 
-  async getAccessToken(userId: string): Promise<string> {
-    const stored = await this.findToken(userId);
+  async getAccessToken(accountId: string): Promise<string> {
+    const stored = await this.findToken(accountId);
     if (!stored || stored.refreshExpiresAt <= Date.now()) {
       throw new UnauthorizedException('需要先完成飞书用户授权');
     }
@@ -67,27 +68,33 @@ export class FeishuOAuthService {
     const refreshed = await this.openApi.refreshUserToken(
       this.decrypt(stored.encryptedRefreshToken),
     );
-    await this.storeToken(userId, refreshed);
+    await this.storeToken(accountId, refreshed);
     return refreshed.accessToken;
   }
 
-  private async findToken(userId: string): Promise<StoredToken | undefined> {
+  async getAuthorizedLarkUserId(accountId: string): Promise<string> {
+    const accessToken = await this.getAccessToken(accountId);
+    const identity = await this.openApi.getCurrentUser(accessToken);
+    return identity.userId;
+  }
+
+  private async findToken(accountId: string): Promise<StoredToken | undefined> {
     const db = this.requireDatabase();
     const [row] = await db
       .select()
       .from(feishuOAuthToken)
-      .where(eq(feishuOAuthToken.userId, userId))
+      .where(eq(feishuOAuthToken.userId, accountId))
       .limit(1);
     return row;
   }
 
   private async storeToken(
-    userId: string,
+    accountId: string,
     token: FeishuOAuthToken,
   ): Promise<void> {
     const now = Date.now();
     const stored: typeof feishuOAuthToken.$inferInsert = {
-      userId,
+      userId: accountId,
       encryptedAccessToken: this.encrypt(token.accessToken),
       encryptedRefreshToken: this.encrypt(token.refreshToken),
       accessExpiresAt: now + Math.max(0, token.expiresIn - 30) * 1_000,
@@ -111,10 +118,10 @@ export class FeishuOAuthService {
       });
   }
 
-  private createState(userId: string): string {
+  private createState(accountId: string): string {
     const issuedAt = Date.now().toString(36);
     const nonce = randomBytes(12).toString('base64url');
-    const payload = Buffer.from(`${userId}\n${issuedAt}\n${nonce}`).toString(
+    const payload = Buffer.from(`${accountId}\n${issuedAt}\n${nonce}`).toString(
       'base64url',
     );
     return `${payload}.${this.sign(payload)}`;
@@ -126,12 +133,16 @@ export class FeishuOAuthService {
       throw new BadRequestException('飞书 OAuth state 无效');
     }
     const decoded = Buffer.from(payload, 'base64url').toString();
-    const [userId, issuedAt] = decoded.split('\n');
+    const [accountId, issuedAt] = decoded.split('\n');
     const timestamp = Number.parseInt(issuedAt, 36);
-    if (!userId || !Number.isFinite(timestamp) || Date.now() - timestamp > 600_000) {
+    if (
+      !accountId ||
+      !Number.isFinite(timestamp) ||
+      Date.now() - timestamp > 600_000
+    ) {
       throw new BadRequestException('飞书 OAuth state 已过期');
     }
-    return userId;
+    return accountId;
   }
 
   private sign(payload: string): string {

@@ -78,7 +78,7 @@ export class FeishuOpenApiClient {
       url: '/open-apis/authen/v1/user_info',
     });
     if (!data.user_id) {
-      throw new UnauthorizedException('飞书授权未返回 user_id');
+      throw new UnauthorizedException('飞书未返回当前用户 ID');
     }
     return { userId: data.user_id };
   }

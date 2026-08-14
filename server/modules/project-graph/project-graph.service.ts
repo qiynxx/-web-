@@ -42,6 +42,7 @@ import {
   type FeishuBaseRecord,
 } from '../feishu-openapi/feishu-base.client';
 import { FeishuOAuthService } from '../feishu-openapi/feishu-oauth.service';
+import { ApaasUserIdentityService } from '../feishu-openapi/apaas-user-identity.service';
 import { ProjectWorkspaceRepository } from './project-workspace.repository';
 
 const NODE_PLUGIN_ID = 'project_graph_node_crud_1';
@@ -164,10 +165,12 @@ export class ProjectGraphService {
   constructor(
     private readonly capabilityService: CapabilityService,
     private readonly authnService: AuthNPaasService,
+    private readonly userIdentity: ApaasUserIdentityService,
     @Optional() private readonly larkCli?: LarkCliBaseClient,
     @Optional() private readonly feishuBase?: FeishuBaseClient,
     @Optional() private readonly oauth?: FeishuOAuthService,
-    @Optional() private readonly workspaceRepository?: ProjectWorkspaceRepository,
+    @Optional()
+    private readonly workspaceRepository?: ProjectWorkspaceRepository,
   ) {}
 
   async listProjects(
@@ -199,13 +202,12 @@ export class ProjectGraphService {
         if (catalogProject) return catalogProject;
         const hasLegacyIdentity = Boolean(
           extractText(record.record[PROJECT_FIELD.CODE]).trim() ||
-            extractText(record.record[PROJECT_FIELD.NAME]).trim(),
+          extractText(record.record[PROJECT_FIELD.NAME]).trim(),
         );
         return hasLegacyIdentity ? mapProjectRecord(record, index) : null;
       })
-      .filter(
-        (project): project is ProjectWorkspace =>
-          Boolean(project?.id && project.name.trim()),
+      .filter((project): project is ProjectWorkspace =>
+        Boolean(project?.id && project.name.trim()),
       );
     const openApiBaseTokens = new Set(
       openApiProjects.map((project) => project.base.baseToken),
@@ -236,7 +238,7 @@ export class ProjectGraphService {
 
   async retryCatalogSync(): Promise<{ synced: boolean }> {
     if (!this.usesOpenApiStorage()) return { synced: false };
-    const userId = await this.requireCurrentLarkUserId();
+    const userId = this.requireCurrentAccountId();
     await this.retryPendingCatalogProjects(userId);
     this.projectCatalogCache = undefined;
     return { synced: true };
@@ -352,10 +354,12 @@ export class ProjectGraphService {
 
     try {
       if (this.usesOpenApiStorage()) {
-        const userId = await this.requireCurrentLarkUserId();
+        const userId = this.requireCurrentAccountId();
         await this.feishuBase!.renameBase(userId, project.base.baseToken, name);
         try {
-          const workspace = await this.workspaceRepository!.findById(project.id);
+          const workspace = await this.workspaceRepository!.findById(
+            project.id,
+          );
           if (workspace) {
             await this.workspaceRepository!.rename(project.id, name);
             const renamedWorkspace = await this.workspaceRepository!.findById(
@@ -448,8 +452,7 @@ export class ProjectGraphService {
     if (!this.feishuBase || !this.workspaceRepository) {
       throw new BadRequestException('飞书 OpenAPI 项目存储未初始化');
     }
-    const userId = await this.authnService.getCurrentUserLarkUserId();
-    if (!userId) throw new ForbiddenException('无法识别当前飞书用户');
+    const userId = this.userIdentity.requireAccountId();
     const workspace = await this.workspaceRepository.findOrCreate(
       request.name.trim(),
       request.description?.trim() ?? '',
@@ -569,7 +572,8 @@ export class ProjectGraphService {
       recordId = records.find(
         (record) =>
           extractText(record.record[CATALOG_FIELD.CODE]) === workspace.code ||
-          extractText(record.record[CATALOG_FIELD.BASE_TOKEN]) === base.baseToken,
+          extractText(record.record[CATALOG_FIELD.BASE_TOKEN]) ===
+            base.baseToken,
       )?.id;
     }
     if (recordId) {
@@ -718,9 +722,13 @@ export class ProjectGraphService {
       }
       const workspace = await this.workspaceRepository!.findById(project.id);
       if (!workspace) throw new BadRequestException('项目不存在或已被移除');
-      const userId = await this.requireCurrentLarkUserId();
+      const userId = this.requireCurrentAccountId();
       if (workspace.creatorUserId !== userId) {
-        throw new ForbiddenException('只有项目创建者可以删除项目');
+        const authorizedLarkUserId =
+          await this.oauth!.getAuthorizedLarkUserId(userId);
+        if (workspace.creatorUserId !== authorizedLarkUserId) {
+          throw new ForbiddenException('只有项目创建者可以删除项目');
+        }
       }
       if (!workspace.base?.baseToken) {
         if (workspace.deletionStatus === 'deleted') {
@@ -946,7 +954,10 @@ export class ProjectGraphService {
       throw new BadRequestException('source and target are required');
     }
     const project = await this.resolveProject(projectId);
-    const nodeRecords = await this.searchAllRecords(NODE_PLUGIN_ID, project.base);
+    const nodeRecords = await this.searchAllRecords(
+      NODE_PLUGIN_ID,
+      project.base,
+    );
     const nodeRecordIds = new Set(nodeRecords.map((record) => record.id));
     const sourceId = resolveRecordId(
       edge.source,
@@ -1059,7 +1070,7 @@ export class ProjectGraphService {
     project: ProjectWorkspace,
   ): Promise<void> {
     if (!this.usesOpenApiStorage() || project.source !== 'linked-base') return;
-    const userId = await this.requireCurrentLarkUserId();
+    const userId = this.requireCurrentAccountId();
     await this.feishuBase!.ensureSelectOptions(
       userId,
       project.base.baseToken,
@@ -1076,7 +1087,7 @@ export class ProjectGraphService {
     if (!this.usesOpenApiStorage() || project.source !== 'linked-base') return;
     const ownerNames = normalizedOwnerNames(owners);
     if (ownerNames.length === 0) return;
-    const userId = await this.requireCurrentLarkUserId();
+    const userId = this.requireCurrentAccountId();
     await this.feishuBase!.ensureSelectOptions(
       userId,
       project.base.baseToken,
@@ -1098,7 +1109,7 @@ export class ProjectGraphService {
     maxRecords?: number,
   ): Promise<PluginRecord[]> {
     if (this.usesOpenApiStorage() && base) {
-      const userId = await this.requireCurrentLarkUserId();
+      const userId = this.requireCurrentAccountId();
       const tableId =
         pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
       return this.feishuBase!.listRecords(
@@ -1146,7 +1157,7 @@ export class ProjectGraphService {
     base?: BaseLinkConfig,
   ): Promise<string> {
     if (this.usesOpenApiStorage() && base) {
-      const userId = await this.requireCurrentLarkUserId();
+      const userId = this.requireCurrentAccountId();
       const tableId =
         pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
       return this.feishuBase!.createRecord(
@@ -1181,7 +1192,7 @@ export class ProjectGraphService {
     base?: BaseLinkConfig,
   ): Promise<void> {
     if (this.usesOpenApiStorage() && base) {
-      const userId = await this.requireCurrentLarkUserId();
+      const userId = this.requireCurrentAccountId();
       const tableId =
         pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
       await this.feishuBase!.updateRecord(
@@ -1221,7 +1232,7 @@ export class ProjectGraphService {
     base?: BaseLinkConfig,
   ): Promise<void> {
     if (this.usesOpenApiStorage() && base) {
-      const userId = await this.requireCurrentLarkUserId();
+      const userId = this.requireCurrentAccountId();
       const tableId =
         pluginId === EDGE_PLUGIN_ID ? base.edgeTableId : base.nodeTableId;
       await this.feishuBase!.deleteRecord(
@@ -1300,17 +1311,13 @@ export class ProjectGraphService {
     return (
       process.env.PROJECT_GRAPH_STORAGE_MODE === 'feishu-openapi' &&
       Boolean(
-        this.feishuBase &&
-          this.workspaceRepository?.isEnabled() &&
-          this.oauth,
+        this.feishuBase && this.workspaceRepository?.isEnabled() && this.oauth,
       )
     );
   }
 
-  private async requireCurrentLarkUserId(): Promise<string> {
-    const userId = await this.authnService.getCurrentUserLarkUserId();
-    if (!userId) throw new ForbiddenException('无法识别当前飞书用户');
-    return userId;
+  private requireCurrentAccountId(): string {
+    return this.userIdentity.requireAccountId();
   }
 
   private usesDirectBaseStorage(): boolean {
@@ -1874,9 +1881,7 @@ function buildIndependentEdgeFields(
 
 // --- Field builders ---
 function normalizedOwnerNames(owners: ProjectOwner[]): string[] {
-  return [
-    ...new Set(owners.map((owner) => owner.name.trim()).filter(Boolean)),
-  ];
+  return [...new Set(owners.map((owner) => owner.name.trim()).filter(Boolean))];
 }
 
 function toNodeFields(
@@ -2346,14 +2351,22 @@ function toProjectLane(typeValue: string, groupValue: string): ProjectLane {
   }
   if (group.includes('软件') || group.includes('software')) return 'software';
   if (group.includes('算法') || group.includes('algorithm')) return 'algorithm';
-  if (group.includes('联调') || group.includes('测试') || group.includes('integration')) {
+  if (
+    group.includes('联调') ||
+    group.includes('测试') ||
+    group.includes('integration')
+  ) {
     return 'integration';
   }
   if (group.includes('硬件') || group.includes('hardware')) return 'hardware';
 
   const type = typeValue.toLowerCase();
   if (type.includes('算法') || type.includes('algorithm')) return 'algorithm';
-  if (type.includes('联调') || type.includes('测试') || type.includes('integration')) {
+  if (
+    type.includes('联调') ||
+    type.includes('测试') ||
+    type.includes('integration')
+  ) {
     return 'integration';
   }
   if (type.includes('硬件') || type.includes('hardware')) return 'hardware';

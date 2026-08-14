@@ -6,6 +6,7 @@ import type {
 import type { LarkCliBaseClient } from './lark-cli-base.client';
 import type { FeishuBaseClient } from '../feishu-openapi/feishu-base.client';
 import type { FeishuOAuthService } from '../feishu-openapi/feishu-oauth.service';
+import type { ApaasUserIdentityService } from '../feishu-openapi/apaas-user-identity.service';
 import type { ProjectWorkspaceRepository } from './project-workspace.repository';
 import { ProjectGraphService } from './project-graph.service';
 
@@ -13,6 +14,13 @@ const NODE_PLUGIN_ID = 'project_graph_node_crud_1';
 const EDGE_PLUGIN_ID = 'project_graph_connection_bitable_crud_1';
 const PROJECT_PLUGIN_ID = 'project_graph_project_crud_1';
 const PROJECT_RECORD_ID = 'recvrkK0GUt2Sf';
+function createUserIdentity(
+  accountId = 'miaoda-account-id',
+): ApaasUserIdentityService {
+  return {
+    requireAccountId: jest.fn(() => accountId),
+  } as unknown as ApaasUserIdentityService;
+}
 
 function nodeRecord(
   id: string,
@@ -69,8 +77,20 @@ function createService(options?: {
       'rec_node_1',
     ),
     nodeRecord('rec_node_3', 'stable-3', 303, '联调测试', '硬件'),
-    nodeRecord('rec_node_structure', 'stable-structure', 606, '结构设计', '硬件'),
-    nodeRecord('rec_node_electronics', 'stable-electronics', 607, '电子电气', '硬件'),
+    nodeRecord(
+      'rec_node_structure',
+      'stable-structure',
+      606,
+      '结构设计',
+      '硬件',
+    ),
+    nodeRecord(
+      'rec_node_electronics',
+      'stable-electronics',
+      607,
+      '电子电气',
+      '硬件',
+    ),
     nodeRecord('rec_node_driver', 'stable-driver', 608, '驱动固件', '软件'),
     nodeRecord('rec_node_algorithm', 'stable-algorithm', 609, '算法', '算法'),
     nodeRecord(
@@ -155,8 +175,7 @@ function createService(options?: {
         项目编码: 'linked-project',
         项目名称: '独立 Base 项目',
         状态: '推进中',
-        说明:
-          '云端动态绑定项目\n[project-graph-meta]{"sort":4,"source":"linked-base","base":{"baseToken":"base_linked","nodeTableId":"tbl_node_linked","edgeTableId":"tbl_edge_linked","url":"https://example.feishu.cn/wiki/linked"}}',
+        说明: '云端动态绑定项目\n[project-graph-meta]{"sort":4,"source":"linked-base","base":{"baseToken":"base_linked","nodeTableId":"tbl_node_linked","edgeTableId":"tbl_edge_linked","url":"https://example.feishu.cn/wiki/linked"}}',
       },
     },
     {
@@ -211,7 +230,11 @@ function createService(options?: {
   } as unknown as AuthNPaasService;
   return {
     calls,
-    service: new ProjectGraphService(capabilityService, authnService),
+    service: new ProjectGraphService(
+      capabilityService,
+      authnService,
+      createUserIdentity(),
+    ),
   };
 }
 
@@ -294,7 +317,12 @@ function createCliService() {
   return {
     larkCli,
     listRecords,
-    service: new ProjectGraphService(capabilityService, authnService, larkCli),
+    service: new ProjectGraphService(
+      capabilityService,
+      authnService,
+      createUserIdentity(),
+      larkCli,
+    ),
   };
 }
 
@@ -372,7 +400,7 @@ function createOpenApiService(options?: { failOwnerOptions?: boolean }) {
     }),
   } as unknown as CapabilityService;
   const authnService = {
-    getCurrentUserLarkUserId: jest.fn(async () => 'user-id'),
+    getCurrentUserLarkUserId: jest.fn(async () => 'legacy-lark-user-id'),
     getBatchLarkUserIds: jest.fn(async () => []),
   } as unknown as AuthNPaasService;
   return {
@@ -383,6 +411,7 @@ function createOpenApiService(options?: { failOwnerOptions?: boolean }) {
     service: new ProjectGraphService(
       capabilityService,
       authnService,
+      createUserIdentity(),
       undefined,
       feishuBase,
       {} as FeishuOAuthService,
@@ -428,13 +457,19 @@ describe('ProjectGraphService Base channel', () => {
     });
     expect(graph.nodes).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: 'rec_node_structure', lane: 'structure' }),
+        expect.objectContaining({
+          id: 'rec_node_structure',
+          lane: 'structure',
+        }),
         expect.objectContaining({
           id: 'rec_node_electronics',
           lane: 'electronics',
         }),
         expect.objectContaining({ id: 'rec_node_driver', lane: 'driver' }),
-        expect.objectContaining({ id: 'rec_node_algorithm', lane: 'algorithm' }),
+        expect.objectContaining({
+          id: 'rec_node_algorithm',
+          lane: 'algorithm',
+        }),
       ]),
     );
     expect(graph.edges.slice(1)).toEqual(
@@ -469,9 +504,9 @@ describe('ProjectGraphService Base channel', () => {
       name: '头戴设备硬件代际项目管理',
       source: 'shared-base',
     });
-    expect(catalog.projects.some((project) => project.name === '未命名项目')).toBe(
-      false,
-    );
+    expect(
+      catalog.projects.some((project) => project.name === '未命名项目'),
+    ).toBe(false);
     expect(
       catalog.projects.find((project) => project.id === 'rec_project_modern'),
     ).toMatchObject({
@@ -1259,9 +1294,9 @@ describe('ProjectGraphService Base channel', () => {
     await expect(
       service.updateNode('rec_other_project', { title: '越界修改' }),
     ).rejects.toThrow('node not found');
-    await expect(
-      service.deleteNode('rec_other_project'),
-    ).rejects.toThrow('node not found');
+    await expect(service.deleteNode('rec_other_project')).rejects.toThrow(
+      'node not found',
+    );
     await expect(
       service.createEdge({
         source: 'rec_node_1',
@@ -1352,12 +1387,8 @@ describe('ProjectGraphService Base channel', () => {
     });
 
     it('repairs unique owner options before updating both owner fields', async () => {
-      const {
-        callOrder,
-        ensureSelectOptions,
-        service,
-        updateRecord,
-      } = createOpenApiService();
+      const { callOrder, ensureSelectOptions, service, updateRecord } =
+        createOpenApiService();
 
       await service.updateNode(
         'rec_openapi_node',
@@ -1373,7 +1404,7 @@ describe('ProjectGraphService Base channel', () => {
 
       expect(callOrder.slice(0, 2)).toEqual(['ensure:任务负责人', 'update']);
       expect(ensureSelectOptions).toHaveBeenCalledWith(
-        'user-id',
+        'miaoda-account-id',
         'base_openapi',
         'tbl_node_openapi',
         '任务负责人',
@@ -1383,7 +1414,7 @@ describe('ProjectGraphService Base channel', () => {
         ],
       );
       expect(updateRecord).toHaveBeenCalledWith(
-        'user-id',
+        'miaoda-account-id',
         'base_openapi',
         'tbl_node_openapi',
         'rec_openapi_node',
@@ -1406,7 +1437,7 @@ describe('ProjectGraphService Base channel', () => {
 
       expect(ensureSelectOptions).not.toHaveBeenCalled();
       expect(updateRecord).toHaveBeenCalledWith(
-        'user-id',
+        'miaoda-account-id',
         'base_openapi',
         'tbl_node_openapi',
         'rec_openapi_node',
@@ -1426,7 +1457,7 @@ describe('ProjectGraphService Base channel', () => {
 
       expect(ensureSelectOptions).not.toHaveBeenCalled();
       expect(updateRecord).toHaveBeenCalledWith(
-        'user-id',
+        'miaoda-account-id',
         'base_openapi',
         'tbl_node_openapi',
         'rec_openapi_node',
@@ -1454,20 +1485,16 @@ describe('ProjectGraphService Base channel', () => {
         'rec_openapi_project',
       );
 
-      expect(callOrder).toEqual([
-        'ensure:分组',
-        'ensure:任务负责人',
-        'create',
-      ]);
+      expect(callOrder).toEqual(['ensure:分组', 'ensure:任务负责人', 'create']);
       expect(ensureSelectOptions).toHaveBeenLastCalledWith(
-        'user-id',
+        'miaoda-account-id',
         'base_openapi',
         'tbl_node_openapi',
         '任务负责人',
         [{ name: '殷雄伟', hue: 'Blue', lightness: 'Light' }],
       );
       expect(createRecord).toHaveBeenCalledWith(
-        'user-id',
+        'miaoda-account-id',
         'base_openapi',
         'tbl_node_openapi',
         expect.objectContaining({

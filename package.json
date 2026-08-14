@@ -36,6 +36,7 @@
   },
   "dependencies": {
     "@lark-apaas/fullstack-nestjs-core": "^1.1.57",
+    "@lark-apaas/nestjs-common": "^0.1.9",
     "@lark-apaas/nestjs-datapaas": "^1.0.21",
     "@nestjs/axios": "^4.0.1",
     "@nestjs/cache-manager": "^3.1.3",
