@@ -2692,6 +2692,14 @@ function HardwareThumbnail({ node }: HardwareThumbnailProps) {
           <path className="device-trace" d="M 24 24 L 66 24 M 30 46 L 60 46" />
         </svg>
       )}
+      <span
+        aria-label={`状态：${STATUS_LABELS[node.status]}`}
+        className="node-visual-status"
+        title={`节点状态：${STATUS_LABELS[node.status]}`}
+      >
+        <span aria-hidden="true" className="node-visual-status-dot" />
+        {STATUS_LABELS[node.status]}
+      </span>
     </span>
   );
 }
