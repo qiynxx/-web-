@@ -58,7 +58,7 @@ export class ProjectGraphController {
     @Param('projectId') projectId: string,
     @Body() request: UpdateProjectWorkspaceRequest,
   ): Promise<ProjectWorkspace> {
-    return this.projectGraphService.updateProjectName(projectId, request);
+    return this.projectGraphService.updateProject(projectId, request);
   }
 
   @NeedLogin()

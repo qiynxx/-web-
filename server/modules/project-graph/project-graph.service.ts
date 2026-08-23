@@ -98,7 +98,9 @@ const NODE_FIELD = {
   TASK_OWNER: '任务负责人',
   PROGRESS: '进度',
   VERSION: '版本/分支',
-  DATE: '日期',
+  LEGACY_DATE: '日期',
+  START_DATE: '开始日期',
+  DEADLINE: '截止日期',
   TAGS: '标签',
   SUMMARY: '工作内容',
   NEXT: '下一步',
@@ -108,6 +110,18 @@ const NODE_FIELD = {
   PROJECT: '所属项目',
   PARENT: '父节点',
 } as const;
+const PROJECT_TIMELINE_FIELDS = [
+  {
+    name: NODE_FIELD.START_DATE,
+    type: 'datetime',
+    style: { format: 'yyyy-MM-dd' },
+  },
+  {
+    name: NODE_FIELD.DEADLINE,
+    type: 'datetime',
+    style: { format: 'yyyy-MM-dd' },
+  },
+] as Array<Record<string, unknown> & { name: string }>;
 
 const EDGE_FIELD = {
   NAME: '连接名称',
@@ -134,6 +148,7 @@ const CATALOG_FIELD = {
   STATUS: '状态',
   DESCRIPTION: '项目说明',
   PROGRESS: '整体进度',
+  DEADLINE: '项目截止日期',
   DOCUMENT_URL: '项目文档',
   WEB_URL: 'Web 可视化',
   BASE_TOKEN: 'Base Token',
@@ -144,6 +159,13 @@ const CATALOG_FIELD = {
   CREATED_AT: '创建时间',
   UPDATED_AT: '更新时间',
 } as const;
+const PROJECT_DEADLINE_FIELD = [
+  {
+    name: CATALOG_FIELD.DEADLINE,
+    type: 'datetime',
+    style: { format: 'yyyy-MM-dd' },
+  },
+] as Array<Record<string, unknown> & { name: string }>;
 
 type PluginRecord = { id: string; record: Record<string, unknown> };
 
@@ -251,6 +273,7 @@ export class ProjectGraphService {
     if (!name) {
       throw new BadRequestException('项目名称不能为空');
     }
+    const deadline = resolveProjectDeadline(request.deadline);
     if (request.source !== 'shared-base' && request.source !== 'linked-base') {
       throw new BadRequestException('项目数据源无效');
     }
@@ -264,12 +287,13 @@ export class ProjectGraphService {
       throw new BadRequestException('项目名称已存在');
     }
     if (this.usesOpenApiStorage()) {
-      return this.createOpenApiProject({ ...request, name });
+      return this.createOpenApiProject({ ...request, name, deadline });
     }
     if (this.usesLarkCliStorage()) {
       return this.createIndependentProject({
         ...request,
         name,
+        deadline,
         source: 'linked-base',
       });
     }
@@ -292,6 +316,7 @@ export class ProjectGraphService {
       [CATALOG_FIELD.NAME]: name,
       [CATALOG_FIELD.STATUS]: '规划',
       [CATALOG_FIELD.DESCRIPTION]: request.description?.trim() ?? '',
+      [CATALOG_FIELD.DEADLINE]: toDateTimestamp(deadline),
       [CATALOG_FIELD.PROGRESS]: 0,
       ...(documentUrl
         ? {
@@ -313,6 +338,7 @@ export class ProjectGraphService {
       code,
       name,
       description: request.description?.trim() ?? '',
+      deadline,
       status: 'planned',
       parentId: meta.parentId,
       sort: meta.sort,
@@ -323,7 +349,7 @@ export class ProjectGraphService {
     };
   }
 
-  async updateProjectName(
+  async updateProject(
     projectId: string,
     request: UpdateProjectWorkspaceRequest,
   ): Promise<ProjectWorkspace> {
@@ -348,100 +374,151 @@ export class ProjectGraphService {
     ) {
       throw new BadRequestException('项目名称已存在');
     }
-    if (project.name === name) {
-      return project;
-    }
+    const deadline =
+      request.deadline !== undefined
+        ? resolveProjectDeadline(request.deadline)
+        : project.deadline;
+    const nameChanged = project.name !== name;
+    const deadlineChanged = project.deadline !== deadline;
+    if (!nameChanged && !deadlineChanged) return project;
 
     try {
       if (this.usesOpenApiStorage()) {
         const userId = this.requireCurrentAccountId();
-        await this.feishuBase!.renameBase(userId, project.base.baseToken, name);
+        if (nameChanged) {
+          await this.feishuBase!.renameBase(
+            userId,
+            project.base.baseToken,
+            name,
+          );
+        }
         try {
           const workspace = await this.workspaceRepository!.findById(
             project.id,
           );
           if (workspace) {
-            await this.workspaceRepository!.rename(project.id, name);
-            const renamedWorkspace = await this.workspaceRepository!.findById(
+            await this.workspaceRepository!.updateDetails(project.id, {
+              name,
+              deadline,
+            });
+            const updatedWorkspace = await this.workspaceRepository!.findById(
               project.id,
             );
-            if (renamedWorkspace) {
+            if (updatedWorkspace) {
               try {
-                await this.syncCatalogProject(userId, renamedWorkspace);
+                await this.syncCatalogProject(userId, updatedWorkspace);
               } catch (catalogError: unknown) {
                 await this.workspaceRepository!.markCatalogPending(
                   project.id,
                   stringifyError(catalogError),
                 );
                 this.logger.warn(
-                  `Project renamed but catalog mirror failed: ${stringifyError(catalogError)}`,
+                  `Project settings saved but catalog mirror failed: ${stringifyError(catalogError)}`,
                 );
               }
             }
           } else {
+            if (deadlineChanged) {
+              await this.feishuBase!.ensureFields(
+                userId,
+                CATALOG_BASE_TOKEN,
+                CATALOG_TABLE_ID,
+                PROJECT_DEADLINE_FIELD,
+              );
+            }
             await this.feishuBase!.updateRecord(
               userId,
               CATALOG_BASE_TOKEN,
               CATALOG_TABLE_ID,
               project.id,
-              { [CATALOG_FIELD.NAME]: name },
+              {
+                ...(nameChanged ? { [CATALOG_FIELD.NAME]: name } : {}),
+                ...(deadlineChanged && deadline
+                  ? {
+                      [CATALOG_FIELD.DEADLINE]: toCliDateValue(deadline),
+                    }
+                  : {}),
+              },
             );
           }
         } catch (catalogOrDatabaseError: unknown) {
-          try {
-            await this.feishuBase!.renameBase(
-              userId,
-              project.base.baseToken,
-              project.name,
-            );
-          } catch (rollbackError: unknown) {
-            this.logger.error(
-              `Project title rollback failed: ${stringifyError(rollbackError)}`,
-            );
+          if (nameChanged) {
+            try {
+              await this.feishuBase!.renameBase(
+                userId,
+                project.base.baseToken,
+                project.name,
+              );
+            } catch (rollbackError: unknown) {
+              this.logger.error(
+                `Project title rollback failed: ${stringifyError(rollbackError)}`,
+              );
+            }
           }
           throw catalogOrDatabaseError;
         }
-        this.projectCatalogCache = undefined;
       } else if (this.usesLarkCliStorage()) {
-        await this.larkCli!.renameBitable(project.base.baseToken, name);
+        if (nameChanged) {
+          await this.larkCli!.renameBitable(project.base.baseToken, name);
+        }
         try {
+          if (deadlineChanged) {
+            await this.larkCli!.ensureFields(
+              CATALOG_BASE_TOKEN,
+              CATALOG_TABLE_ID,
+              PROJECT_DEADLINE_FIELD,
+            );
+          }
           await this.larkCli!.updateRecord(
             CATALOG_BASE_TOKEN,
             CATALOG_TABLE_ID,
             project.id,
-            { [CATALOG_FIELD.NAME]: name },
+            {
+              ...(nameChanged ? { [CATALOG_FIELD.NAME]: name } : {}),
+              ...(deadlineChanged && deadline
+                ? {
+                    [CATALOG_FIELD.DEADLINE]: toCliDateValue(deadline),
+                  }
+                : {}),
+            },
           );
         } catch (error: unknown) {
-          try {
-            await this.larkCli!.renameBitable(
-              project.base.baseToken,
-              project.name,
-            );
-          } catch (rollbackError: unknown) {
-            this.logger.error(
-              `Project title rollback failed: ${stringifyError(rollbackError)}`,
-            );
+          if (nameChanged) {
+            try {
+              await this.larkCli!.renameBitable(
+                project.base.baseToken,
+                project.name,
+              );
+            } catch (rollbackError: unknown) {
+              this.logger.error(
+                `Project title rollback failed: ${stringifyError(rollbackError)}`,
+              );
+            }
           }
           throw error;
         }
       } else {
         await this.pluginUpdateRecord(PROJECT_PLUGIN_ID, project.id, {
-          [CATALOG_FIELD.NAME]: name,
+          ...(nameChanged ? { [CATALOG_FIELD.NAME]: name } : {}),
+          ...(deadlineChanged && deadline
+            ? { [CATALOG_FIELD.DEADLINE]: toDateTimestamp(deadline) }
+            : {}),
         });
       }
       this.projectCatalogCache = undefined;
       return {
         ...project,
         name,
+        deadline,
         updatedAt: formatNowTime(),
       };
     } catch (error: unknown) {
-      this.logger.error(`Project rename failed: ${stringifyError(error)}`);
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
+      this.logger.error(
+        `Project settings update failed: ${stringifyError(error)}`,
+      );
+      if (error instanceof BadRequestException) throw error;
       throw new BadRequestException(
-        `项目名称修改失败: ${stringifyError(error)}`,
+        `项目设置修改失败: ${stringifyError(error)}`,
       );
     }
   }
@@ -456,6 +533,7 @@ export class ProjectGraphService {
     const workspace = await this.workspaceRepository.findOrCreate(
       request.name.trim(),
       request.description?.trim() ?? '',
+      request.deadline,
       userId,
     );
     if (
@@ -469,6 +547,7 @@ export class ProjectGraphService {
         code: workspace.code,
         name: workspace.name,
         description: workspace.description,
+        deadline: workspace.deadline,
         status: 'planned',
         sort: Date.now(),
         source: 'linked-base',
@@ -510,6 +589,7 @@ export class ProjectGraphService {
         code: workspace.code,
         name: workspace.name,
         description: workspace.description,
+        deadline: workspace.deadline,
         status: 'planned',
         sort: Date.now(),
         source: 'linked-base',
@@ -533,6 +613,7 @@ export class ProjectGraphService {
       code: string;
       name: string;
       description: string;
+      deadline?: string;
       catalogRecordId?: string;
       base?: Partial<BaseLinkConfig>;
     },
@@ -541,6 +622,12 @@ export class ProjectGraphService {
     if (!base?.baseToken || !base.nodeTableId || !base.edgeTableId) {
       throw new BadRequestException('项目 Base 尚未创建完成');
     }
+    await this.feishuBase!.ensureFields(
+      userId,
+      CATALOG_BASE_TOKEN,
+      CATALOG_TABLE_ID,
+      PROJECT_DEADLINE_FIELD,
+    );
     await this.feishuBase!.ensureUrlField(
       userId,
       CATALOG_BASE_TOKEN,
@@ -553,6 +640,11 @@ export class ProjectGraphService {
       [CATALOG_FIELD.NAME]: workspace.name,
       [CATALOG_FIELD.STATUS]: '规划',
       [CATALOG_FIELD.DESCRIPTION]: workspace.description,
+      ...(workspace.deadline
+        ? {
+            [CATALOG_FIELD.DEADLINE]: toCliDateValue(workspace.deadline),
+          }
+        : {}),
       [CATALOG_FIELD.PROGRESS]: 0,
       [CATALOG_FIELD.DOCUMENT_URL]: base.url ?? '',
       [CATALOG_FIELD.WEB_URL]: webUrl,
@@ -664,6 +756,11 @@ export class ProjectGraphService {
         edgeTableId: edgeTable.id,
         url: document.url,
       };
+      await this.larkCli!.ensureFields(
+        CATALOG_BASE_TOKEN,
+        CATALOG_TABLE_ID,
+        PROJECT_DEADLINE_FIELD,
+      );
       const recordId = await this.larkCli!.createRecord(
         CATALOG_BASE_TOKEN,
         CATALOG_TABLE_ID,
@@ -672,6 +769,7 @@ export class ProjectGraphService {
           [CATALOG_FIELD.NAME]: name,
           [CATALOG_FIELD.STATUS]: '规划',
           [CATALOG_FIELD.DESCRIPTION]: request.description?.trim() ?? '',
+          [CATALOG_FIELD.DEADLINE]: toCliDateValue(request.deadline ?? ''),
           [CATALOG_FIELD.PROGRESS]: 0,
           [CATALOG_FIELD.DOCUMENT_URL]: document.url,
           [CATALOG_FIELD.BASE_TOKEN]: document.baseToken,
@@ -687,6 +785,7 @@ export class ProjectGraphService {
         code,
         name,
         description: request.description?.trim() ?? '',
+        deadline: request.deadline,
         status: 'planned',
         parentId: request.parentId || undefined,
         sort: Date.now(),
@@ -829,6 +928,14 @@ export class ProjectGraphService {
     const project = await this.resolveProject(projectId);
     const node = await this.findNodeForProject(nodeId, project);
     if (!node) throw new BadRequestException('node not found');
+    if (patch.startDate !== undefined || patch.deadline !== undefined) {
+      const currentSchedule = readNodeSchedule(node.record);
+      validateProjectSchedule(
+        patch.startDate ?? currentSchedule.startDate,
+        patch.deadline ?? currentSchedule.deadline,
+      );
+      await this.ensureProjectTimelineFields(project);
+    }
     if (patch.lane) {
       await this.ensureProjectGroupOptions(project);
     }
@@ -856,15 +963,19 @@ export class ProjectGraphService {
       throw new BadRequestException('title is required');
     }
     const project = await this.resolveProject(projectId);
+    const startDate = node.startDate ?? node.deadline;
+    validateProjectSchedule(startDate, node.deadline);
+    const scheduledNode = { ...node, startDate };
+    await this.ensureProjectTimelineFields(project);
     await this.ensureProjectGroupOptions(project);
     await this.ensureProjectOwnerOptions(project, node.owners ?? []);
     const createdNodeId = await this.pluginAddRecord(
       NODE_PLUGIN_ID,
       project.source === 'linked-base'
         ? this.usesDirectBaseStorage()
-          ? toCliNewNodeFields(node)
-          : toLinkedNewNodeFields(node)
-        : toNewNodeFields(node, project),
+          ? toCliNewNodeFields(scheduledNode)
+          : toLinkedNewNodeFields(scheduledNode)
+        : toNewNodeFields(scheduledNode, project),
       project.base,
     );
     const parentId = node.linkedIds?.[0];
@@ -903,7 +1014,7 @@ export class ProjectGraphService {
     }
     return {
       node: {
-        ...node,
+        ...scheduledNode,
         id: createdNodeId,
         linkedIds: parentId ? [parentId] : [],
       },
@@ -1064,6 +1175,27 @@ export class ProjectGraphService {
       }
     }
     return this.getGraph(project.id);
+  }
+
+  private async ensureProjectTimelineFields(
+    project: ProjectWorkspace,
+  ): Promise<void> {
+    if (this.usesOpenApiStorage()) {
+      await this.feishuBase!.ensureFields(
+        this.requireCurrentAccountId(),
+        project.base.baseToken,
+        project.base.nodeTableId,
+        PROJECT_TIMELINE_FIELDS,
+      );
+      return;
+    }
+    if (this.usesLarkCliStorage()) {
+      await this.larkCli!.ensureFields(
+        project.base.baseToken,
+        project.base.nodeTableId,
+        PROJECT_TIMELINE_FIELDS,
+      );
+    }
   }
 
   private async ensureProjectGroupOptions(
@@ -1420,6 +1552,7 @@ export class ProjectGraphService {
     const legacyUserOwners = this.extractOwners(
       record[NODE_FIELD.LEGACY_OWNER],
     );
+    const schedule = readNodeSchedule(record);
     return {
       id: recordId,
       title: extractText(record[NODE_FIELD.NAME]) || '未命名节点',
@@ -1436,7 +1569,8 @@ export class ProjectGraphService {
             : extractNamedOwners(record[NODE_FIELD.LEGACY_OWNER]),
       progress: normalizeProgress(extractNumber(record[NODE_FIELD.PROGRESS])),
       version: extractText(record[NODE_FIELD.VERSION]),
-      date: formatDateValue(record[NODE_FIELD.DATE]),
+      startDate: schedule.startDate,
+      deadline: schedule.deadline,
       tags: splitTextList(extractText(record[NODE_FIELD.TAGS])),
       summary: extractText(record[NODE_FIELD.SUMMARY]),
       nextAction: extractText(record[NODE_FIELD.NEXT]),
@@ -1603,6 +1737,8 @@ function mapProjectRecord(
       extractText(record.record[PROJECT_FIELD.CODE]) || `project-${record.id}`,
     name: extractText(record.record[PROJECT_FIELD.NAME]) || '未命名项目',
     description,
+    deadline:
+      formatDateValue(record.record[CATALOG_FIELD.DEADLINE]) || undefined,
     status: toProjectWorkspaceStatus(
       extractText(record.record[PROJECT_FIELD.STATUS]),
     ),
@@ -1644,6 +1780,8 @@ function mapCatalogRecord(
       `project-${record.id}`,
     name,
     description: extractText(record.record[CATALOG_FIELD.DESCRIPTION]).trim(),
+    deadline:
+      formatDateValue(record.record[CATALOG_FIELD.DEADLINE]) || undefined,
     status: toProjectWorkspaceStatus(
       extractText(record.record[CATALOG_FIELD.STATUS]),
     ),
@@ -1807,11 +1945,7 @@ function buildIndependentNodeFields(): Array<Record<string, unknown>> {
       style: { type: 'progress', percentage: true, color: 'Blue' },
     },
     { name: NODE_FIELD.VERSION, type: 'text' },
-    {
-      name: NODE_FIELD.DATE,
-      type: 'datetime',
-      style: { format: 'yyyy-MM-dd' },
-    },
+    ...PROJECT_TIMELINE_FIELDS,
     { name: NODE_FIELD.TAGS, type: 'text' },
     { name: NODE_FIELD.SUMMARY, type: 'text' },
     { name: NODE_FIELD.NEXT, type: 'text' },
@@ -1836,7 +1970,8 @@ function buildProjectBoardVisibleFields(): string[] {
     NODE_FIELD.STATUS,
     NODE_FIELD.SUMMARY,
     NODE_FIELD.PROGRESS,
-    NODE_FIELD.DATE,
+    NODE_FIELD.START_DATE,
+    NODE_FIELD.DEADLINE,
     NODE_FIELD.NEXT,
     NODE_FIELD.RISKS,
     NODE_FIELD.TYPE,
@@ -1915,8 +2050,11 @@ function toNodeFields(
   if (typeof patch.version === 'string') {
     fields[NODE_FIELD.VERSION] = patch.version;
   }
-  if (typeof patch.date === 'string') {
-    fields[NODE_FIELD.DATE] = toDateTimestamp(patch.date);
+  if (typeof patch.startDate === 'string') {
+    fields[NODE_FIELD.START_DATE] = toDateTimestamp(patch.startDate);
+  }
+  if (typeof patch.deadline === 'string') {
+    fields[NODE_FIELD.DEADLINE] = toDateTimestamp(patch.deadline);
   }
   if (patch.tags) {
     fields[NODE_FIELD.TAGS] = patch.tags.join('，');
@@ -1942,7 +2080,7 @@ function toNodeFields(
 function toLinkedNodeFields(
   patch: UpdateProjectGraphNodeRequest,
 ): Record<string, unknown> {
-  const fields = toNodeFields({ ...patch, owners: undefined, date: undefined });
+  const fields = toNodeFields({ ...patch, owners: undefined });
   // Independent project Bases keep graph relationships in the edge table.
   // Their node tables intentionally do not contain the shared-Base 父节点 field.
   delete fields[NODE_FIELD.PARENT];
@@ -1951,8 +2089,11 @@ function toLinkedNodeFields(
     fields[NODE_FIELD.LEGACY_OWNER] = ownerNames.join(' / ');
     fields[NODE_FIELD.TASK_OWNER] = ownerNames;
   }
-  if (typeof patch.date === 'string') {
-    fields[NODE_FIELD.DATE] = toDateTimestamp(patch.date);
+  if (typeof patch.startDate === 'string') {
+    fields[NODE_FIELD.START_DATE] = toDateTimestamp(patch.startDate);
+  }
+  if (typeof patch.deadline === 'string') {
+    fields[NODE_FIELD.DEADLINE] = toDateTimestamp(patch.deadline);
   }
   return fields;
 }
@@ -1961,8 +2102,11 @@ function toCliNodeFields(
   patch: UpdateProjectGraphNodeRequest,
 ): Record<string, unknown> {
   const fields = toLinkedNodeFields(patch);
-  if (typeof patch.date === 'string') {
-    fields[NODE_FIELD.DATE] = toCliDateValue(patch.date);
+  if (typeof patch.startDate === 'string') {
+    fields[NODE_FIELD.START_DATE] = toCliDateValue(patch.startDate);
+  }
+  if (typeof patch.deadline === 'string') {
+    fields[NODE_FIELD.DEADLINE] = toCliDateValue(patch.deadline);
   }
   return fields;
 }
@@ -1979,7 +2123,8 @@ function toNewNodeFields(
     [NODE_FIELD.STATUS]: toBaseStatus(node.status),
     [NODE_FIELD.PROGRESS]: normalizeProgress(node.progress ?? 0),
     [NODE_FIELD.VERSION]: node.version ?? '',
-    [NODE_FIELD.DATE]: toDateTimestamp(node.date),
+    [NODE_FIELD.START_DATE]: toDateTimestamp(node.startDate ?? node.deadline),
+    [NODE_FIELD.DEADLINE]: toDateTimestamp(node.deadline),
     [NODE_FIELD.SUBTITLE]: node.subtitle ?? '',
     [NODE_FIELD.TAGS]: (node.tags ?? []).join('，'),
     [NODE_FIELD.SUMMARY]: node.summary ?? '',
@@ -2002,7 +2147,10 @@ function toCliNewNodeFields(
   node: CreateProjectGraphNodeRequest,
 ): Record<string, unknown> {
   const fields = toLinkedNewNodeFields(node);
-  fields[NODE_FIELD.DATE] = toCliDateValue(node.date);
+  fields[NODE_FIELD.START_DATE] = toCliDateValue(
+    node.startDate ?? node.deadline,
+  );
+  fields[NODE_FIELD.DEADLINE] = toCliDateValue(node.deadline);
   return fields;
 }
 
@@ -2020,7 +2168,8 @@ function toLinkedNewNodeFields(
     [NODE_FIELD.TASK_OWNER]: ownerNames,
     [NODE_FIELD.PROGRESS]: normalizeProgress(node.progress ?? 0),
     [NODE_FIELD.VERSION]: node.version ?? '',
-    [NODE_FIELD.DATE]: toDateTimestamp(node.date),
+    [NODE_FIELD.START_DATE]: toDateTimestamp(node.startDate ?? node.deadline),
+    [NODE_FIELD.DEADLINE]: toDateTimestamp(node.deadline),
     [NODE_FIELD.SUBTITLE]: node.subtitle ?? '',
     [NODE_FIELD.TAGS]: (node.tags ?? []).join('，'),
     [NODE_FIELD.SUMMARY]: node.summary ?? '',
@@ -2144,6 +2293,7 @@ function toDateTimestamp(value: string): number | null {
   }
   const year = Number(match[1]);
   const month = Number(match[2]);
+
   const day = Number(match[3]);
   const timestamp = Date.UTC(year, month - 1, day);
   const parsed = new Date(timestamp);
@@ -2156,11 +2306,46 @@ function toDateTimestamp(value: string): number | null {
   }
   return timestamp;
 }
+function resolveProjectDeadline(value?: string): string {
+  const deadline =
+    value?.trim() ||
+    new Date(Date.now() + 90 * 86_400_000).toISOString().slice(0, 10);
+  if (toDateTimestamp(deadline) === null) {
+    throw new BadRequestException('项目截止日期不能为空');
+  }
+  return deadline;
+}
 
 function toCliDateValue(value: string): string | null {
   if (!value) return null;
   toDateTimestamp(value);
   return `${value} 00:00:00`;
+}
+function validateProjectSchedule(startDate: string, deadline: string): void {
+  const startTimestamp = toDateTimestamp(startDate);
+  const deadlineTimestamp = toDateTimestamp(deadline);
+  if (startTimestamp === null || deadlineTimestamp === null) {
+    throw new BadRequestException('开始日期和截止日期不能为空');
+  }
+  if (startTimestamp > deadlineTimestamp) {
+    throw new BadRequestException('开始日期不能晚于截止日期');
+  }
+}
+
+function readNodeSchedule(record: Record<string, unknown>): {
+  startDate: string;
+  deadline: string;
+} {
+  const fallback =
+    formatDateValue(record[NODE_FIELD.LEGACY_DATE]) ||
+    new Date().toISOString().slice(0, 10);
+  const deadline = formatDateValue(record[NODE_FIELD.DEADLINE]) || fallback;
+  const rawStartDate =
+    formatDateValue(record[NODE_FIELD.START_DATE]) || deadline;
+  return {
+    startDate: rawStartDate > deadline ? deadline : rawStartDate,
+    deadline,
+  };
 }
 
 // --- Value extractors ---

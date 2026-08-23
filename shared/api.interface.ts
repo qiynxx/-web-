@@ -47,7 +47,8 @@ export interface ProjectGraphNode {
   owners: ProjectOwner[];
   progress: number;
   version: string;
-  date: string;
+  startDate: string;
+  deadline: string;
   x: number;
   y: number;
   tags: string[];
@@ -121,7 +122,8 @@ export type UpdateProjectGraphNodeRequest = Partial<
     | 'owners'
     | 'progress'
     | 'version'
-    | 'date'
+    | 'startDate'
+    | 'deadline'
     | 'tags'
     | 'summary'
     | 'nextAction'
@@ -145,6 +147,7 @@ export interface ProjectWorkspace {
   code: string;
   name: string;
   description: string;
+  deadline?: string;
   status: 'planned' | 'active' | 'paused' | 'archived';
   parentId?: string;
   sort: number;
@@ -172,6 +175,7 @@ export interface DeleteProjectWorkspaceResponse {
 
 export interface CreateProjectWorkspaceRequest {
   name: string;
+  deadline?: string;
   description?: string;
   parentId?: string;
   source: ProjectWorkspaceSource;
@@ -181,13 +185,16 @@ export interface CreateProjectWorkspaceRequest {
 }
 
 export interface UpdateProjectWorkspaceRequest {
+  deadline?: string;
   name: string;
 }
 
 export type CreateProjectGraphNodeRequest = Omit<
   ProjectGraphNode,
-  'id' | 'sourceRecordId'
->;
+  'id' | 'sourceRecordId' | 'startDate'
+> & {
+  startDate?: string;
+};
 
 export type CreateProjectGraphEdgeRequest = Omit<ProjectGraphEdge, 'id'>;
 

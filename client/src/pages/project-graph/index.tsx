@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   ArrowUpRight,
   Boxes,
+  CalendarDays,
   CheckCircle2,
   CircleDot,
   Download,
@@ -56,7 +57,9 @@ import type {
   UpdateProjectWorkspaceRequest,
 } from '@shared/api.interface';
 import {
+  addProjectDays,
   buildBaseTableUrl,
+  buildGanttTimeline,
   buildUiMetrics,
   calculateGraphFitScale,
   clampProgress,
@@ -67,9 +70,12 @@ import {
   LANE_DEFAULT_KIND,
   LANE_LABELS,
   laneOptions,
+  getDeadlineState,
+  getGanttPosition,
   PROJECT_LANES,
   layoutGraph,
   parseCommaList,
+  normalizeSchedulePatch,
   parseLineList,
   readActiveProjectId,
   STATUS_CLASS,
@@ -206,10 +212,11 @@ function ProjectGraphPage() {
   const [projects, setProjects] = useState<ProjectWorkspace[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string>('');
   const [projectDialogOpen, setProjectDialogOpen] = useState<boolean>(false);
-  const [projectForm, setProjectForm] = useState({
+  const [projectForm, setProjectForm] = useState(() => ({
     name: '',
     description: '',
-  });
+    deadline: addProjectDays(new Date().toISOString().slice(0, 10), 90),
+  }));
   const [creatingProject, setCreatingProject] = useState<boolean>(false);
   const [projectCreationStage, setProjectCreationStage] = useState<
     'idle' | 'authorizing' | 'provisioning'
@@ -217,6 +224,8 @@ function ProjectGraphPage() {
   const [projectCreationError, setProjectCreationError] = useState<string>('');
   const [renameDialogOpen, setRenameDialogOpen] = useState<boolean>(false);
   const [renameProjectName, setRenameProjectName] = useState<string>('');
+  const [renameProjectDeadline, setRenameProjectDeadline] =
+    useState<string>('');
   const [renamingProject, setRenamingProject] = useState<boolean>(false);
   const [deleteProjectDialogOpen, setDeleteProjectDialogOpen] =
     useState<boolean>(false);
@@ -231,6 +240,9 @@ function ProjectGraphPage() {
   );
   const [query, setQuery] = useState<string>('');
   const [compactMode, setCompactMode] = useState<boolean>(false);
+  const [workspaceView, setWorkspaceView] = useState<'graph' | 'gantt'>(
+    'gantt',
+  );
   const [navigationCollapsed, setNavigationCollapsed] =
     useState<boolean>(false);
   const [inspectorOpen, setInspectorOpen] = useState<boolean>(false);
@@ -249,6 +261,10 @@ function ProjectGraphPage() {
   >({});
   const activeProjectIdRef = useRef<string>('');
   const graphRequestIdRef = useRef<number>(0);
+  const graphCacheRef = useRef<Map<string, ProjectGraphResponse>>(new Map());
+  const graphFetchesRef = useRef<Map<string, Promise<ProjectGraphResponse>>>(
+    new Map(),
+  );
   const creatingNodeRef = useRef<boolean>(false);
   const deletingNodeRef = useRef<boolean>(false);
   const ownerIds = useMemo(
@@ -351,6 +367,68 @@ function ProjectGraphPage() {
     }
   }
 
+  async function fetchProjectGraph(
+    projectId: string,
+    bypassCache = false,
+  ): Promise<ProjectGraphResponse> {
+    const cached = graphCacheRef.current.get(projectId);
+    if (cached && !bypassCache) return cached;
+    const inFlight = graphFetchesRef.current.get(projectId);
+    if (inFlight) return inFlight;
+
+    const request = projectGraph
+      .getProjectGraph(projectId)
+      .then((nextGraph: ProjectGraphResponse) => {
+        const normalizedGraph: ProjectGraphResponse = {
+          ...nextGraph,
+          metrics: buildUiMetrics(nextGraph.nodes),
+        };
+        graphCacheRef.current.set(projectId, normalizedGraph);
+        return normalizedGraph;
+      })
+      .finally(() => {
+        if (graphFetchesRef.current.get(projectId) === request) {
+          graphFetchesRef.current.delete(projectId);
+        }
+      });
+    graphFetchesRef.current.set(projectId, request);
+    return request;
+  }
+
+  async function prefetchProjectGraphs(
+    catalogProjects: ProjectWorkspace[],
+    activeId: string,
+  ): Promise<void> {
+    for (const project of catalogProjects) {
+      if (project.id === activeId || graphCacheRef.current.has(project.id)) {
+        continue;
+      }
+      try {
+        await fetchProjectGraph(project.id);
+      } catch {
+        // Prefetch is opportunistic; an explicit switch still reports failures.
+      }
+    }
+  }
+
+  function applyLoadedGraph(
+    projectId: string,
+    nextGraph: ProjectGraphResponse,
+  ): void {
+    activeProjectIdRef.current = projectId;
+    setActiveProjectId(projectId);
+    writeActiveProjectId(projectId);
+    writeLinkedProjectId(projectId);
+    setGraph(nextGraph);
+    setSelectedId((currentId: string) => {
+      const exists = nextGraph.nodes.some(
+        (node: ProjectGraphNode) => node.id === currentId,
+      );
+      return exists ? currentId : (nextGraph.nodes[0]?.id ?? '');
+    });
+    setSelectedEdgeId('');
+  }
+
   async function initializeProjects(): Promise<void> {
     setLoading(true);
     setError('');
@@ -379,7 +457,8 @@ function ProjectGraphPage() {
         : catalog.projects.some((project) => project.id === storedProjectId)
           ? storedProjectId
           : catalog.defaultProjectId;
-      await loadGraph(targetProjectId, false);
+      await loadGraph(targetProjectId, false, false);
+      void prefetchProjectGraphs(catalog.projects, targetProjectId);
       void projectGraph.retryProjectCatalogSync().catch(() => undefined);
     } catch (loadError: unknown) {
       setError(`项目目录加载失败：${getRequestErrorMessage(loadError)}`);
@@ -390,30 +469,28 @@ function ProjectGraphPage() {
   async function loadGraph(
     projectId?: string,
     manageLoading = true,
+    preferCache = true,
   ): Promise<void> {
     const requestId = ++graphRequestIdRef.current;
-    if (manageLoading) setLoading(true);
+    const targetProjectId = projectId || activeProjectIdRef.current;
+    if (!targetProjectId) {
+      setLoading(false);
+      return;
+    }
+    const cached = preferCache
+      ? graphCacheRef.current.get(targetProjectId)
+      : undefined;
+    if (cached) {
+      applyLoadedGraph(targetProjectId, cached);
+      setLoading(false);
+    } else if (manageLoading) {
+      setLoading(true);
+    }
     setError('');
     try {
-      const targetProjectId = projectId || activeProjectIdRef.current;
-      if (!targetProjectId) return;
-      const nextGraph = await projectGraph.getProjectGraph(targetProjectId);
+      const nextGraph = await fetchProjectGraph(targetProjectId, true);
       if (requestId !== graphRequestIdRef.current) return;
-      activeProjectIdRef.current = targetProjectId;
-      setActiveProjectId(targetProjectId);
-      writeActiveProjectId(targetProjectId);
-      writeLinkedProjectId(targetProjectId);
-      setGraph({
-        ...nextGraph,
-        metrics: buildUiMetrics(nextGraph.nodes),
-      });
-      setSelectedId((currentId: string) => {
-        const exists: boolean = nextGraph.nodes.some(
-          (node: ProjectGraphNode) => node.id === currentId,
-        );
-        return exists ? currentId : (nextGraph.nodes[0]?.id ?? '');
-      });
-      setSelectedEdgeId('');
+      applyLoadedGraph(targetProjectId, nextGraph);
     } catch (loadError: unknown) {
       if (requestId !== graphRequestIdRef.current) return;
       setError(`项目图谱数据加载失败：${getRequestErrorMessage(loadError)}`);
@@ -423,10 +500,11 @@ function ProjectGraphPage() {
   }
 
   function persistCurrentGraph(nextGraph: ProjectGraphResponse): void {
-    void nextGraph;
+    const projectId = activeProjectIdRef.current;
+    if (projectId) graphCacheRef.current.set(projectId, nextGraph);
   }
 
-  function updateSelectedNode(patch: Partial<EditableNodePatch>): void {
+  function updateNode(nodeId: string, patch: Partial<EditableNodePatch>): void {
     if (creatingNodeRef.current) {
       return;
     }
@@ -437,7 +515,7 @@ function ProjectGraphPage() {
 
       const nextNodes: ProjectGraphNode[] = currentGraph.nodes.map(
         (node: ProjectGraphNode) =>
-          node.id === selectedId ? { ...node, ...patch } : node,
+          node.id === nodeId ? { ...node, ...patch } : node,
       );
       const nextGraph: ProjectGraphResponse = {
         ...currentGraph,
@@ -448,7 +526,7 @@ function ProjectGraphPage() {
       if (nextGraph.base) {
         queueBaseNodeSync(
           activeProjectIdRef.current,
-          selectedId,
+          nodeId,
           patch as UpdateProjectGraphNodeRequest,
         );
       } else {
@@ -456,6 +534,9 @@ function ProjectGraphPage() {
       }
       return nextGraph;
     });
+  }
+  function updateSelectedNode(patch: Partial<EditableNodePatch>): void {
+    updateNode(selectedId, patch);
   }
 
   function queueBaseNodeSync(
@@ -1050,21 +1131,30 @@ function ProjectGraphPage() {
 
   function resetLocalEdits(): void {
     setSavedAt('');
-    void loadGraph(activeProjectId);
+    void loadGraph(activeProjectId, true, false);
   }
 
   function switchProject(projectId: string): void {
+    if (!projectId || projectId === activeProjectIdRef.current) return;
     graphRequestIdRef.current += 1;
     activeProjectIdRef.current = projectId;
+    setActiveProjectId(projectId);
     writeActiveProjectId(projectId);
     writeLinkedProjectId(projectId);
     setSelectedEdgeId('');
+    setInspectorOpen(false);
     setSavedAt('');
-    void loadGraph(projectId);
+    const cached = graphCacheRef.current.get(projectId);
+    if (!cached) setGraph(null);
+    void loadGraph(projectId, !cached, true);
   }
 
   function openProjectDialog(): void {
-    setProjectForm({ name: '', description: '' });
+    setProjectForm({
+      name: '',
+      description: '',
+      deadline: addProjectDays(new Date().toISOString().slice(0, 10), 90),
+    });
     setProjectCreationStage('idle');
     setProjectCreationError('');
     setProjectDialogOpen(true);
@@ -1146,6 +1236,7 @@ function ProjectGraphPage() {
       setProjectCreationStage('provisioning');
       const request: CreateProjectWorkspaceRequest = {
         name,
+        deadline: projectForm.deadline,
         description: projectForm.description.trim(),
         source: 'linked-base',
       };
@@ -1183,6 +1274,10 @@ function ProjectGraphPage() {
   function openRenameProjectDialog(): void {
     if (!activeProject) return;
     setRenameProjectName(activeProject.name);
+    setRenameProjectDeadline(
+      activeProject.deadline ??
+        addProjectDays(new Date().toISOString().slice(0, 10), 90),
+    );
     setRenameDialogOpen(true);
     setError('');
   }
@@ -1197,7 +1292,10 @@ function ProjectGraphPage() {
     if (!activeProject || !name || renamingProject) return;
     setRenamingProject(true);
     try {
-      const request: UpdateProjectWorkspaceRequest = { name };
+      const request: UpdateProjectWorkspaceRequest = {
+        name,
+        deadline: renameProjectDeadline,
+      };
       const updatedProject = await projectGraph.updateProjectWorkspace(
         activeProject.id,
         request,
@@ -1208,10 +1306,10 @@ function ProjectGraphPage() {
         ),
       );
       setRenameDialogOpen(false);
-      setSavedAt(`项目已重命名为“${updatedProject.name}”并同步到飞书`);
+      setSavedAt(`项目设置已同步到飞书：${updatedProject.name}`);
       setError('');
     } catch (requestError: unknown) {
-      setError(`项目名称修改失败：${getRequestErrorMessage(requestError)}`);
+      setError(`项目设置修改失败：${getRequestErrorMessage(requestError)}`);
     } finally {
       setRenamingProject(false);
     }
@@ -1328,6 +1426,14 @@ function ProjectGraphPage() {
   const activeProject = projects.find(
     (project) => project.id === activeProjectId,
   );
+  const projectDeadlineTone =
+    activeProject?.deadline &&
+    activeProject.deadline < new Date().toISOString().slice(0, 10) &&
+    activeProject.status !== 'archived'
+      ? 'deadline-overdue'
+      : activeProject?.deadline
+        ? 'deadline-on-track'
+        : 'deadline-due-soon';
   const projectRows = useMemo(() => buildProjectTreeRows(projects), [projects]);
   const baseNodeTableUrl = buildBaseTableUrl(
     graph?.base?.url,
@@ -1510,6 +1616,8 @@ function ProjectGraphPage() {
                   {project.source === 'linked-base'
                     ? '独立 Base'
                     : '共享 Base 项目空间'}
+                  {' · DDL '}
+                  {project.deadline ?? '未设置'}
                 </small>
               </span>
             </button>
@@ -1525,6 +1633,13 @@ function ProjectGraphPage() {
               硬件主干 / 软件分支
             </div>
             <h1>{activeProject?.name ?? '未命名项目'}</h1>
+            <div className={`project-deadline-summary ${projectDeadlineTone}`}>
+              <CalendarDays />
+              <span>
+                项目截止日期
+                <strong>{activeProject?.deadline ?? '未设置'}</strong>
+              </span>
+            </div>
             <p>
               横向跟踪慢节奏硬件版本，纵向展开结构、电子、驱动、软件、算法、
               联调测试和风险闭环。
@@ -1532,18 +1647,29 @@ function ProjectGraphPage() {
           </div>
           <div className="header-actions">
             <Button
+              className={workspaceView === 'gantt' ? 'active-view-action' : ''}
+              onClick={() => setWorkspaceView('gantt')}
+              variant="outline"
+            >
+              <CalendarDays />
+              <span>项目甘特图</span>
+            </Button>
+            <Button
               disabled={!activeProject}
               onClick={openRenameProjectDialog}
               variant="outline"
             >
               <Pencil />
-              <span>项目名称</span>
+              <span>项目设置</span>
             </Button>
             <Button onClick={exportCurrentProject} variant="outline">
               <Download />
               <span>导出</span>
             </Button>
-            <Button onClick={() => void loadGraph()} variant="outline">
+            <Button
+              onClick={() => void loadGraph(undefined, true, false)}
+              variant="outline"
+            >
               <RefreshCw />
               <span>刷新</span>
             </Button>
@@ -1644,6 +1770,14 @@ function ProjectGraphPage() {
             inspectorOpen ? 'graph-workspace inspector-open' : 'graph-workspace'
           }
         >
+          {inspectorOpen ? (
+            <button
+              aria-label="关闭节点编辑并返回画布"
+              className="mobile-inspector-dismiss"
+              onClick={() => setInspectorOpen(false)}
+              type="button"
+            />
+          ) : null}
           <div className="graph-main-panel">
             <div className="graph-toolbar">
               <div className="search-box">
@@ -1656,6 +1790,24 @@ function ProjectGraphPage() {
                   placeholder="搜索版本、负责人、工作内容、标签"
                   value={query}
                 />
+              </div>
+              <div className="workspace-view-switch" aria-label="项目视图">
+                <button
+                  className={workspaceView === 'graph' ? 'active' : ''}
+                  onClick={() => setWorkspaceView('graph')}
+                  type="button"
+                >
+                  <GitBranch />
+                  流程图
+                </button>
+                <button
+                  className={workspaceView === 'gantt' ? 'active' : ''}
+                  onClick={() => setWorkspaceView('gantt')}
+                  type="button"
+                >
+                  <CalendarDays />
+                  甘特图
+                </button>
               </div>
               <SegmentedControl<ProjectLane | 'all'>
                 label="类型"
@@ -1684,19 +1836,28 @@ function ProjectGraphPage() {
               </button>
             </div>
 
-            <GraphCanvas
-              creatingNode={creatingNode}
-              deletingEdgeId={deletingEdgeId}
-              layout={graphLayout}
-              onAddChild={addChildNode}
-              onConnectNodes={addConnectionEdge}
-              onDeleteEdge={deleteEdge}
-              onDeleteNode={deleteNode}
-              onSelectEdge={selectEdgeForEditing}
-              onSelect={selectNodeForEditing}
-              selectedEdgeId={selectedEdgeId}
-              selectedId={selectedId}
-            />
+            {workspaceView === 'gantt' ? (
+              <GanttChart
+                nodes={filteredNodes}
+                onSelect={selectNodeForEditing}
+                onUpdate={updateNode}
+                selectedId={selectedId}
+              />
+            ) : (
+              <GraphCanvas
+                creatingNode={creatingNode}
+                deletingEdgeId={deletingEdgeId}
+                layout={graphLayout}
+                onAddChild={addChildNode}
+                onConnectNodes={addConnectionEdge}
+                onDeleteEdge={deleteEdge}
+                onDeleteNode={deleteNode}
+                onSelectEdge={selectEdgeForEditing}
+                onSelect={selectNodeForEditing}
+                selectedEdgeId={selectedEdgeId}
+                selectedId={selectedId}
+              />
+            )}
           </div>
 
           <aside className="graph-side-panel">
@@ -1772,6 +1933,21 @@ function ProjectGraphPage() {
               />
             </label>
             <label className="field-stack">
+              <span>项目截止日期</span>
+              <Input
+                disabled={creatingProject}
+                min={new Date().toISOString().slice(0, 10)}
+                onChange={(event) =>
+                  setProjectForm((current) => ({
+                    ...current,
+                    deadline: event.target.value,
+                  }))
+                }
+                type="date"
+                value={projectForm.deadline}
+              />
+            </label>
+            <label className="field-stack">
               <span>项目说明</span>
               <Textarea
                 disabled={creatingProject}
@@ -1792,9 +1968,8 @@ function ProjectGraphPage() {
               </div>
             ) : null}
             <p className="project-dialog-note">
-              确认后会在“硬件项目管理”下新建一个独立 Base，自动建立“项目节点”和
-              “项目连接关系”两张表及按负责人分列的“人员分工看板”，并登记到
-              “Web项目管理可视化”目录。
+              项目截止日期会写入飞书目录 Base。确认后会创建独立
+              Base、项目节点表、连接关系表和人员分工看板。
             </p>
             <ol className="project-sync-steps">
               <li>飞书创建独立项目文档、数据表和人员分工看板。</li>
@@ -1810,7 +1985,11 @@ function ProjectGraphPage() {
                 取消
               </Button>
               <Button
-                disabled={creatingProject || !projectForm.name.trim()}
+                disabled={
+                  creatingProject ||
+                  !projectForm.name.trim() ||
+                  !projectForm.deadline
+                }
                 onClick={() => void submitProjectForm()}
               >
                 <Plus />
@@ -1900,15 +2079,15 @@ function ProjectGraphPage() {
           >
             <div className="project-dialog-heading">
               <div>
-                <span>项目设置</span>
-                <h2 id="rename-project-dialog-title">修改项目名称</h2>
+                <span>项目时间管理</span>
+                <h2 id="rename-project-dialog-title">项目名称与截止日期</h2>
               </div>
               <button onClick={closeRenameProjectDialog} type="button">
                 ×
               </button>
             </div>
             <label className="field-stack">
-              <span>新项目名称</span>
+              <span>项目名称</span>
               <Input
                 autoFocus
                 disabled={renamingProject}
@@ -1923,10 +2102,20 @@ function ProjectGraphPage() {
                 value={renameProjectName}
               />
             </label>
+            <label className="field-stack">
+              <span>项目截止日期</span>
+              <Input
+                disabled={renamingProject}
+                onChange={(event) =>
+                  setRenameProjectDeadline(event.target.value)
+                }
+                type="date"
+                value={renameProjectDeadline}
+              />
+            </label>
             <p className="project-dialog-note">
-              保存后会同时更新 Web
-              项目目录、飞书目录表中的“项目名称”，以及该项目独立 Base
-              文档的标题。
+              保存后会同步更新 Web 项目目录、飞书目录表中的项目名称和截止日期；
+              名称变化还会同步到独立 Base 文档标题。
             </p>
             <div className="project-dialog-actions">
               <Button
@@ -1937,11 +2126,15 @@ function ProjectGraphPage() {
                 取消
               </Button>
               <Button
-                disabled={renamingProject || !renameProjectName.trim()}
+                disabled={
+                  renamingProject ||
+                  !renameProjectName.trim() ||
+                  !renameProjectDeadline
+                }
                 onClick={() => void submitProjectRename()}
               >
                 <Save />
-                {renamingProject ? '正在同步飞书…' : '保存名称'}
+                {renamingProject ? '正在同步飞书…' : '保存项目设置'}
               </Button>
             </div>
           </section>
@@ -2010,6 +2203,7 @@ interface CanvasPanState {
   clientY: number;
   scrollLeft: number;
   scrollTop: number;
+  moved: boolean;
 }
 
 interface CanvasPinchState {
@@ -2043,6 +2237,7 @@ function GraphCanvas({
   const dragConnectionRef = useRef<DragConnectionState | null>(null);
   const connectionStartRef = useRef<{ x: number; y: number } | null>(null);
   const connectionMovedRef = useRef<boolean>(false);
+  const suppressNodeClickUntilRef = useRef<number>(0);
   const onConnectNodesRef = useRef(onConnectNodes);
   const [scale, setScale] = useState<number>(1);
   const [isPanning, setIsPanning] = useState<boolean>(false);
@@ -2282,20 +2477,33 @@ function GraphCanvas({
   function handleCanvasPointerDown(
     event: React.PointerEvent<HTMLDivElement>,
   ): void {
-    const interactiveTarget = (event.target as Element).closest(
-      '.graph-node, .edge-group, .canvas-zoom-controls, .node-edge-popover, button, a, input, select, textarea, [role="button"]',
-    );
-    if (interactiveTarget || (event.button !== 0 && event.button !== 1)) {
-      return;
-    }
+    const canvas = canvasRef.current;
+    if (!canvas || (event.button !== 0 && event.button !== 1)) return;
+
     if (event.pointerType === 'touch') {
       touchPointersRef.current.set(event.pointerId, {
         x: event.clientX,
         y: event.clientY,
       });
+      const directControl = (event.target as Element).closest(
+        '.canvas-zoom-controls, .node-quick-add, .node-delete-button, .node-connect-handle, .node-edge-popover, a, input, select, textarea',
+      );
+      if (directControl) return;
+      panRef.current = {
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        scrollLeft: canvas.scrollLeft,
+        scrollTop: canvas.scrollTop,
+        moved: false,
+      };
+      return;
     }
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+
+    const interactiveTarget = (event.target as Element).closest(
+      '.graph-node, .edge-group, .canvas-zoom-controls, .node-edge-popover, button, a, input, select, textarea, [role="button"]',
+    );
+    if (interactiveTarget) return;
     event.preventDefault();
     canvas.setPointerCapture(event.pointerId);
     panRef.current = {
@@ -2304,6 +2512,7 @@ function GraphCanvas({
       clientY: event.clientY,
       scrollLeft: canvas.scrollLeft,
       scrollTop: canvas.scrollTop,
+      moved: true,
     };
     setIsPanning(true);
   }
@@ -2321,6 +2530,11 @@ function GraphCanvas({
     }
     const touchPoints = [...touchPointersRef.current.values()];
     if (touchPoints.length >= 2) {
+      event.preventDefault();
+      if (!canvas.hasPointerCapture(event.pointerId)) {
+        canvas.setPointerCapture(event.pointerId);
+      }
+      suppressNodeClickUntilRef.current = window.performance.now() + 450;
       const [first, second] = touchPoints;
       const distance = Math.hypot(second.x - first.x, second.y - first.y);
       const centerX = (first.x + second.x) / 2;
@@ -2345,26 +2559,54 @@ function GraphCanvas({
         });
       }
       panRef.current = null;
-      setIsPanning(false);
+      setIsPanning(true);
       return;
     }
+
     const pan = panRef.current;
     if (!pan || pan.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - pan.clientX;
+    const deltaY = event.clientY - pan.clientY;
+    if (
+      event.pointerType === 'touch' &&
+      !pan.moved &&
+      Math.hypot(deltaX, deltaY) < 8
+    ) {
+      return;
+    }
+    if (event.pointerType === 'touch') {
+      event.preventDefault();
+      if (!canvas.hasPointerCapture(event.pointerId)) {
+        canvas.setPointerCapture(event.pointerId);
+      }
+      suppressNodeClickUntilRef.current = window.performance.now() + 450;
+    }
+    if (!pan.moved) {
+      panRef.current = { ...pan, moved: true };
+      setIsPanning(true);
+    }
     canvas.scrollTo({
-      left: pan.scrollLeft - (event.clientX - pan.clientX),
-      top: pan.scrollTop - (event.clientY - pan.clientY),
+      left: pan.scrollLeft - deltaX,
+      top: pan.scrollTop - deltaY,
     });
   }
 
   function handleCanvasPointerEnd(
     event: React.PointerEvent<HTMLDivElement>,
   ): void {
+    const panMoved =
+      panRef.current?.pointerId === event.pointerId && panRef.current.moved;
+    const pinching =
+      pinchRef.current !== null || touchPointersRef.current.size >= 2;
     touchPointersRef.current.delete(event.pointerId);
+    if (panMoved || pinching) {
+      suppressNodeClickUntilRef.current = window.performance.now() + 450;
+    }
     if (touchPointersRef.current.size < 2) pinchRef.current = null;
     if (panRef.current?.pointerId === event.pointerId) {
       panRef.current = null;
-      setIsPanning(false);
     }
+    if (touchPointersRef.current.size === 0) setIsPanning(false);
     if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
       canvasRef.current.releasePointerCapture(event.pointerId);
     }
@@ -2534,7 +2776,17 @@ function GraphCanvas({
                       relatedToSelected ? 'related' : 'unrelated',
                     ].join(' ')}
                     key={edge.id}
-                    onClick={() => onSelectEdge(edge.id)}
+                    onClick={(event: React.MouseEvent<SVGGElement>) => {
+                      if (
+                        window.performance.now() <
+                        suppressNodeClickUntilRef.current
+                      ) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        return;
+                      }
+                      onSelectEdge(edge.id);
+                    }}
                   >
                     <path
                       className="edge-hit-area"
@@ -2598,7 +2850,14 @@ function GraphCanvas({
                 ].join(' ')}
                 data-graph-node-id={node.id}
                 key={node.id}
-                onClick={() => {
+                onClick={(event: React.MouseEvent<HTMLDivElement>) => {
+                  if (
+                    window.performance.now() < suppressNodeClickUntilRef.current
+                  ) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    return;
+                  }
                   const connection = dragConnectionRef.current;
                   if (connection?.sticky && connection.sourceId !== node.id) {
                     onConnectNodes(connection.sourceId, node.id, '关联');
@@ -2643,6 +2902,12 @@ function GraphCanvas({
                   <span className="node-owner">
                     {node.owners.map((owner) => owner.name).join(' / ') ||
                       '待指定'}
+                  </span>
+                  <span
+                    className={`node-deadline deadline-${getDeadlineState(node)}`}
+                  >
+                    <CalendarDays />
+                    DDL {node.deadline.slice(5)}
                   </span>
                 </span>
                 <button
@@ -2742,6 +3007,199 @@ function GraphCanvas({
         </div>
       </div>
     </div>
+  );
+}
+
+interface GanttChartProps {
+  nodes: ProjectGraphNode[];
+  selectedId: string;
+  onSelect: (nodeId: string) => void;
+  onUpdate: (nodeId: string, patch: Partial<EditableNodePatch>) => void;
+}
+
+function GanttChart({
+  nodes,
+  selectedId,
+  onSelect,
+  onUpdate,
+}: GanttChartProps) {
+  const today = new Date().toISOString().slice(0, 10);
+  const timeline = useMemo(
+    () => buildGanttTimeline(nodes, today),
+    [nodes, today],
+  );
+  const dayWidth =
+    timeline.dayCount > 120 ? 18 : timeline.dayCount > 60 ? 24 : 32;
+  const timelineWidth = timeline.dayCount * dayWidth;
+  const todayIndex = timeline.days.indexOf(today);
+  const overdueCount = nodes.filter(
+    (node) => getDeadlineState(node, today) === 'overdue',
+  ).length;
+
+  return (
+    <section className="gantt-view" aria-label="项目甘特图">
+      <header className="gantt-overview">
+        <div>
+          <CalendarDays />
+          <span>
+            <strong>节点时间计划</strong>
+            <small>
+              {timeline.startDate} — {timeline.endDate}
+            </small>
+          </span>
+        </div>
+        <div className="gantt-overview-stats">
+          <span>{nodes.length} 个节点</span>
+          <span className={overdueCount ? 'has-overdue' : ''}>
+            {overdueCount} 个逾期
+          </span>
+          <span>日期修改自动写回飞书 Base</span>
+        </div>
+      </header>
+      <div className="gantt-scroll">
+        <div className="gantt-grid" style={{ width: 360 + timelineWidth }}>
+          <div className="gantt-label-header">
+            <span>项目节点</span>
+            <small>开始日期 / DDL</small>
+          </div>
+          <div
+            className="gantt-date-header"
+            style={{
+              gridTemplateColumns: `repeat(${timeline.dayCount}, ${dayWidth}px)`,
+              width: timelineWidth,
+            }}
+          >
+            {timeline.days.map((day) => {
+              const date = new Date(`${day}T00:00:00Z`);
+              const isMonthStart = date.getUTCDate() === 1;
+              const isWeekStart = date.getUTCDay() === 1;
+              return (
+                <span
+                  className={[
+                    isMonthStart ? 'month-start' : '',
+                    day === today ? 'today' : '',
+                  ].join(' ')}
+                  key={day}
+                  title={day}
+                >
+                  {isMonthStart
+                    ? `${date.getUTCMonth() + 1}月`
+                    : isWeekStart
+                      ? date.getUTCDate()
+                      : ''}
+                </span>
+              );
+            })}
+          </div>
+          {nodes.map((node) => {
+            const position = getGanttPosition(node, timeline);
+            const deadlineState = getDeadlineState(node, today);
+            return (
+              <div className="gantt-row" key={node.id}>
+                <button
+                  className={[
+                    'gantt-node-cell',
+                    selectedId === node.id ? 'selected' : '',
+                  ].join(' ')}
+                  onClick={() => onSelect(node.id)}
+                  type="button"
+                >
+                  <span className="gantt-node-title">
+                    <i
+                      className={`gantt-status-dot ${STATUS_CLASS[node.status]}`}
+                    />
+                    <span>
+                      <strong>{node.title}</strong>
+                      <small>
+                        {LANE_LABELS[node.lane]} ·{' '}
+                        {node.owners.map((owner) => owner.name).join(' / ') ||
+                          '待指定'}
+                      </small>
+                    </span>
+                  </span>
+                  <span className="gantt-date-inputs">
+                    <input
+                      aria-label={`${node.title} 开始日期`}
+                      max={node.deadline}
+                      onChange={(event) =>
+                        onUpdate(
+                          node.id,
+                          normalizeSchedulePatch(
+                            node,
+                            'startDate',
+                            event.target.value,
+                          ),
+                        )
+                      }
+                      onClick={(event) => event.stopPropagation()}
+                      type="date"
+                      value={node.startDate}
+                    />
+                    <span>→</span>
+                    <input
+                      aria-label={`${node.title} 截止日期`}
+                      min={node.startDate}
+                      onChange={(event) =>
+                        onUpdate(
+                          node.id,
+                          normalizeSchedulePatch(
+                            node,
+                            'deadline',
+                            event.target.value,
+                          ),
+                        )
+                      }
+                      onClick={(event) => event.stopPropagation()}
+                      type="date"
+                      value={node.deadline}
+                    />
+                  </span>
+                </button>
+                <div
+                  className="gantt-track"
+                  style={{
+                    backgroundSize: `${dayWidth}px 100%`,
+                    width: timelineWidth,
+                  }}
+                >
+                  {todayIndex >= 0 ? (
+                    <span
+                      className="gantt-today-line"
+                      style={{ left: todayIndex * dayWidth + dayWidth / 2 }}
+                    />
+                  ) : null}
+                  <button
+                    aria-label={`${node.title}，截止日期 ${node.deadline}`}
+                    className={`gantt-bar deadline-${deadlineState}`}
+                    onClick={() => onSelect(node.id)}
+                    style={{
+                      left: `${position.left}%`,
+                      minWidth: dayWidth,
+                      width: `${position.width}%`,
+                    }}
+                    title={`${node.startDate} → ${node.deadline} · 进度 ${node.progress}%`}
+                    type="button"
+                  >
+                    <span
+                      className="gantt-bar-progress"
+                      style={{ width: `${node.progress}%` }}
+                    />
+                    <strong>{node.progress}%</strong>
+                    <i title={`DDL ${node.deadline}`} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+          {nodes.length === 0 ? (
+            <div className="gantt-empty">
+              <CalendarDays />
+              没有符合筛选条件的项目节点
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -3058,25 +3516,49 @@ function NodeEditor({
         </label>
       </div>
 
-      <div className="editor-grid">
+      <label className="field-stack">
+        <span>版本 / 分支</span>
+        <Input
+          onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+            onUpdate({ version: event.target.value })
+          }
+          value={node.version}
+        />
+      </label>
+
+      <div className="editor-grid schedule-editor-grid">
         <label className="field-stack">
-          <span>版本 / 分支</span>
+          <span>开始日期</span>
           <Input
+            max={node.deadline}
             onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-              onUpdate({ version: event.target.value })
+              onUpdate(
+                normalizeSchedulePatch(node, 'startDate', event.target.value),
+              )
             }
-            value={node.version}
+            type="date"
+            value={node.startDate}
           />
         </label>
         <label className="field-stack">
-          <span>日期</span>
+          <span>截止日期（DDL）</span>
           <Input
+            min={node.startDate}
             onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-              onUpdate({ date: event.target.value })
+              onUpdate(
+                normalizeSchedulePatch(node, 'deadline', event.target.value),
+              )
             }
-            value={node.date}
+            type="date"
+            value={node.deadline}
           />
         </label>
+      </div>
+      <div className={`schedule-state deadline-${getDeadlineState(node)}`}>
+        <CalendarDays />
+        <span>
+          计划 {node.startDate} 至 {node.deadline}
+        </span>
       </div>
 
       <label className="field-stack">

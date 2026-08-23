@@ -36,15 +36,16 @@ export const PROJECT_LANES: ProjectLane[] = [
   'integration',
 ];
 
-export const LANE_DEFAULT_KIND: Record<ProjectLane, ProjectGraphNode['kind']> = {
-  hardware: 'hardware',
-  structure: 'hardware',
-  electronics: 'hardware',
-  driver: 'software',
-  software: 'software',
-  algorithm: 'algorithm',
-  integration: 'test',
-};
+export const LANE_DEFAULT_KIND: Record<ProjectLane, ProjectGraphNode['kind']> =
+  {
+    hardware: 'hardware',
+    structure: 'hardware',
+    electronics: 'hardware',
+    driver: 'software',
+    software: 'software',
+    algorithm: 'algorithm',
+    integration: 'test',
+  };
 
 export const STATUS_LABELS: Record<ProjectNodeStatus | 'all', string> = {
   all: '全部状态',
@@ -133,6 +134,123 @@ export function calculateGraphFitScale(
   const verticalScale = Math.max(0, viewportHeight - 36) / graphHeight;
   return clampGraphScale(Math.min(horizontalScale, verticalScale, 1));
 }
+const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 86_400_000;
+
+export interface GanttTimeline {
+  startDate: string;
+  endDate: string;
+  dayCount: number;
+  days: string[];
+}
+
+export type DeadlineState = 'complete' | 'overdue' | 'due-soon' | 'on-track';
+
+function dateKeyToEpoch(value: string): number | null {
+  if (!DATE_KEY_PATTERN.test(value)) return null;
+  const [year, month, day] = value.split('-').map(Number);
+  const epoch = Date.UTC(year, month - 1, day);
+  const parsed = new Date(epoch);
+  return parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+    ? epoch
+    : null;
+}
+
+function epochToDateKey(epoch: number): string {
+  return new Date(epoch).toISOString().slice(0, 10);
+}
+
+export function addProjectDays(value: string, days: number): string {
+  const epoch = dateKeyToEpoch(value);
+  return epoch === null ? value : epochToDateKey(epoch + days * DAY_MS);
+}
+
+export function buildGanttTimeline(
+  nodes: ProjectGraphNode[],
+  today = new Date().toISOString().slice(0, 10),
+): GanttTimeline {
+  const epochs = nodes.flatMap((node) =>
+    [node.startDate, node.deadline]
+      .map(dateKeyToEpoch)
+      .filter((value): value is number => value !== null),
+  );
+  const todayEpoch = dateKeyToEpoch(today) ?? Date.now();
+  const firstEpoch =
+    (epochs.length ? Math.min(...epochs) : todayEpoch) - 3 * DAY_MS;
+  const lastEpoch =
+    (epochs.length
+      ? Math.max(...epochs, todayEpoch)
+      : todayEpoch + 27 * DAY_MS) +
+    3 * DAY_MS;
+  const dayCount = Math.max(
+    1,
+    Math.round((lastEpoch - firstEpoch) / DAY_MS) + 1,
+  );
+  return {
+    startDate: epochToDateKey(firstEpoch),
+    endDate: epochToDateKey(lastEpoch),
+    dayCount,
+    days: Array.from({ length: dayCount }, (_, index) =>
+      epochToDateKey(firstEpoch + index * DAY_MS),
+    ),
+  };
+}
+
+export function getGanttPosition(
+  node: ProjectGraphNode,
+  timeline: GanttTimeline,
+): { left: number; width: number } {
+  const timelineStart = dateKeyToEpoch(timeline.startDate) ?? 0;
+  const start = dateKeyToEpoch(node.startDate) ?? timelineStart;
+  const deadline = dateKeyToEpoch(node.deadline) ?? start;
+  const leftDays = Math.max(0, Math.round((start - timelineStart) / DAY_MS));
+  const durationDays = Math.max(1, Math.round((deadline - start) / DAY_MS) + 1);
+  return {
+    left: (leftDays / timeline.dayCount) * 100,
+    width:
+      (Math.min(durationDays, timeline.dayCount - leftDays) /
+        timeline.dayCount) *
+      100,
+  };
+}
+
+export function getDeadlineState(
+  node: ProjectGraphNode,
+  today = new Date().toISOString().slice(0, 10),
+): DeadlineState {
+  if (
+    node.status === 'passed' ||
+    node.status === 'released' ||
+    node.status === 'archived'
+  ) {
+    return 'complete';
+  }
+  const deadline = dateKeyToEpoch(node.deadline);
+  const current = dateKeyToEpoch(today);
+  if (deadline === null || current === null) return 'on-track';
+  const remainingDays = Math.round((deadline - current) / DAY_MS);
+  if (remainingDays < 0) return 'overdue';
+  return remainingDays <= 7 ? 'due-soon' : 'on-track';
+}
+
+export function normalizeSchedulePatch(
+  node: ProjectGraphNode,
+  field: 'startDate' | 'deadline',
+  value: string,
+): Pick<ProjectGraphNode, 'startDate' | 'deadline'> {
+  if (field === 'startDate') {
+    return {
+      startDate: value,
+      deadline: value > node.deadline ? value : node.deadline,
+    };
+  }
+  return {
+    startDate: value < node.startDate ? value : node.startDate,
+    deadline: value,
+  };
+}
 
 export type EditableNodePatch = Pick<
   ProjectGraphNode,
@@ -144,7 +262,8 @@ export type EditableNodePatch = Pick<
   | 'owners'
   | 'progress'
   | 'version'
-  | 'date'
+  | 'startDate'
+  | 'deadline'
   | 'tags'
   | 'summary'
   | 'nextAction'
@@ -200,7 +319,8 @@ export function createDefaultNode(
     owners: [],
     progress: 0,
     version: `draft-${nodeCount + 1}`,
-    date: new Date().toISOString().slice(0, 10),
+    startDate: new Date().toISOString().slice(0, 10),
+    deadline: addProjectDays(new Date().toISOString().slice(0, 10), 14),
     x: 900 + nodeCount * 12,
     y: 360 + nodeCount * 12,
     tags: ['草稿'],
@@ -702,7 +822,8 @@ export function writeNodeEdits(nodes: ProjectGraphNode[]): void {
       owners: node.owners,
       progress: node.progress,
       version: node.version,
-      date: node.date,
+      startDate: node.startDate,
+      deadline: node.deadline,
       tags: node.tags,
       summary: node.summary,
       nextAction: node.nextAction,
@@ -786,7 +907,7 @@ function compareBranchNodes(
   if (laneDelta !== 0) {
     return laneDelta;
   }
-  return left.date.localeCompare(right.date);
+  return left.deadline.localeCompare(right.deadline);
 }
 
 function getSubtreeWidth(
@@ -980,7 +1101,8 @@ function isProjectGraphNode(value: unknown): value is ProjectGraphNode {
     Array.isArray(candidate.owners) &&
     typeof candidate.progress === 'number' &&
     typeof candidate.version === 'string' &&
-    typeof candidate.date === 'string' &&
+    typeof candidate.startDate === 'string' &&
+    typeof candidate.deadline === 'string' &&
     Array.isArray(candidate.tags) &&
     Array.isArray(candidate.risks) &&
     Array.isArray(candidate.linkedIds)

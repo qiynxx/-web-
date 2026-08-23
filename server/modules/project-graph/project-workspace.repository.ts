@@ -6,16 +6,14 @@ import {
 import { and, asc, eq, ne, or } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { projectWorkspace } from '@server/database/project-storage.schema';
-import type {
-  BaseLinkConfig,
-  ProjectWorkspace,
-} from '@shared/api.interface';
+import type { BaseLinkConfig, ProjectWorkspace } from '@shared/api.interface';
 
 export interface ProvisioningWorkspace {
   id: string;
   code: string;
   name: string;
   description: string;
+  deadline?: string;
   creatorUserId: string;
   provisioningStatus: string;
   provisioningError?: string;
@@ -60,6 +58,7 @@ export class ProjectWorkspaceRepository {
           code: row.code,
           name: row.name,
           description: row.description,
+          deadline: row.deadline ?? undefined,
           status: toStatus(row.status),
           sort: row.createdAt,
           source: 'linked-base' as const,
@@ -79,6 +78,7 @@ export class ProjectWorkspaceRepository {
   async findOrCreate(
     name: string,
     description: string,
+    deadline: string | undefined,
     creatorUserId: string,
   ): Promise<ProvisioningWorkspace> {
     const normalizedName = normalizeName(name);
@@ -106,6 +106,7 @@ export class ProjectWorkspaceRepository {
         normalizedName,
         name,
         description,
+        deadline,
         creatorUserId,
         createdAt: now,
         updatedAt: now,
@@ -182,12 +183,18 @@ export class ProjectWorkspaceRepository {
       .where(eq(projectWorkspace.id, id));
   }
 
-  async rename(id: string, name: string): Promise<void> {
+  async updateDetails(
+    id: string,
+    details: { name: string; deadline?: string },
+  ): Promise<void> {
     await this.requireDatabase()
       .update(projectWorkspace)
       .set({
-        name,
-        normalizedName: normalizeName(name),
+        name: details.name,
+        normalizedName: normalizeName(details.name),
+        ...(details.deadline !== undefined
+          ? { deadline: details.deadline }
+          : {}),
         catalogSyncStatus: 'pending',
         updatedAt: Date.now(),
       })
@@ -235,7 +242,11 @@ export class ProjectWorkspaceRepository {
   async markDeleting(id: string): Promise<void> {
     await this.requireDatabase()
       .update(projectWorkspace)
-      .set({ deletionStatus: 'deleting', deletionError: null, updatedAt: Date.now() })
+      .set({
+        deletionStatus: 'deleting',
+        deletionError: null,
+        updatedAt: Date.now(),
+      })
       .where(eq(projectWorkspace.id, id));
   }
 
@@ -288,6 +299,7 @@ function mapProvisioning(
     code: row.code,
     name: row.name,
     description: row.description,
+    deadline: row.deadline ?? undefined,
     creatorUserId: row.creatorUserId,
     provisioningStatus: row.provisioningStatus,
     provisioningError: row.provisioningError ?? undefined,

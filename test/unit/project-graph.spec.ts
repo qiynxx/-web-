@@ -6,15 +6,19 @@ import {
 } from '../../server/modules/project-graph/project-graph-static';
 import {
   buildBaseTableUrl,
+  buildGanttTimeline,
   createDefaultNode,
   layoutGraph,
   calculateGraphFitScale,
   clampGraphScale,
   findAddedNode,
+  getDeadlineState,
+  getGanttPosition,
   LANE_DEFAULT_KIND,
   LANE_LABELS,
   laneOptions,
   PROJECT_LANES,
+  normalizeSchedulePatch,
 } from '../../client/src/pages/project-graph/project-graph-model';
 
 describe('project-graph-static', () => {
@@ -174,6 +178,43 @@ describe('project-graph-static', () => {
       expect(clampGraphScale(1.27)).toBe(1.27);
       expect(clampGraphScale(3)).toBe(1.8);
       expect(clampGraphScale(Number.NaN)).toBe(1);
+    });
+  });
+
+  describe('gantt schedule', () => {
+    it('builds a padded timeline and positions a node by its stored dates', () => {
+      const node = {
+        ...buildStaticNodes()[0],
+        startDate: '2026-08-10',
+        deadline: '2026-08-20',
+      };
+      const timeline = buildGanttTimeline([node], '2026-08-15');
+      const position = getGanttPosition(node, timeline);
+
+      expect(timeline.startDate).toBe('2026-08-07');
+      expect(timeline.endDate).toBe('2026-08-23');
+      expect(position.left).toBeCloseTo((3 / 17) * 100);
+      expect(position.width).toBeCloseTo((11 / 17) * 100);
+    });
+
+    it('classifies ddl state and keeps edited ranges valid', () => {
+      const node = {
+        ...buildStaticNodes()[0],
+        status: 'active' as const,
+        startDate: '2026-08-10',
+        deadline: '2026-08-20',
+      };
+
+      expect(getDeadlineState(node, '2026-08-21')).toBe('overdue');
+      expect(getDeadlineState(node, '2026-08-16')).toBe('due-soon');
+      expect(normalizeSchedulePatch(node, 'startDate', '2026-08-25')).toEqual({
+        startDate: '2026-08-25',
+        deadline: '2026-08-25',
+      });
+      expect(normalizeSchedulePatch(node, 'deadline', '2026-08-05')).toEqual({
+        startDate: '2026-08-05',
+        deadline: '2026-08-05',
+      });
     });
   });
 

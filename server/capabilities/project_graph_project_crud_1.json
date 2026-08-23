@@ -52,6 +52,14 @@
         "writeable": true
       },
       {
+        "id": "fldKg2dFCJ",
+        "name": "项目截止日期",
+        "type": 5,
+        "bizType": "DateTime",
+        "readable": true,
+        "writeable": true
+      },
+      {
         "id": "fldmRnEOMM",
         "name": "项目文档",
         "type": 1,

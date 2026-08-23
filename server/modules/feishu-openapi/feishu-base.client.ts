@@ -89,6 +89,7 @@ function isAlreadyDeletedError(error: unknown): boolean {
 
 @Injectable()
 export class FeishuBaseClient {
+  private readonly ensuredFieldSets = new Set<string>();
   private readonly writeQueues = new Map<string, Promise<unknown>>();
 
   constructor(
@@ -424,6 +425,45 @@ export class FeishuBaseClient {
         multiple: Boolean(field.multiple),
         options: [...currentOptions, ...missingOptions],
       },
+    });
+  }
+
+  async ensureFields(
+    userId: string,
+    baseToken: string,
+    tableId: string,
+    requiredFields: Array<Record<string, unknown> & { name: string }>,
+  ): Promise<void> {
+    const cacheKey = `${baseToken}:${tableId}:${requiredFields
+      .map((field) => field.name)
+      .sort()
+      .join(',')}`;
+    if (this.ensuredFieldSets.has(cacheKey)) return;
+    await this.enqueueWrite(`fields:${baseToken}:${tableId}`, async () => {
+      if (this.ensuredFieldSets.has(cacheKey)) return;
+      const accessToken = await this.oauth.getAccessToken(userId);
+      const existing = await this.openApi.request<{
+        items?: Array<{ field_name?: string; name?: string }>;
+        fields?: Array<{ field_name?: string; name?: string }>;
+      }>(accessToken, {
+        method: 'GET',
+        url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/fields`,
+        params: { page_size: 200 },
+      });
+      const existingNames = new Set(
+        (existing.items ?? existing.fields ?? []).map(
+          (field) => field.field_name ?? field.name,
+        ),
+      );
+      for (const field of requiredFields) {
+        if (existingNames.has(field.name)) continue;
+        await this.openApi.request<Record<string, unknown>>(accessToken, {
+          method: 'POST',
+          url: `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/fields`,
+          data: field,
+        });
+      }
+      this.ensuredFieldSets.add(cacheKey);
     });
   }
 

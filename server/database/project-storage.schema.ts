@@ -2,6 +2,7 @@ import { pgTable, text, bigint, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const feishuOAuthToken = pgTable('feishu_oauth_tokens', {
   userId: text('user_id').primaryKey(),
+  appId: text('app_id'),
   encryptedAccessToken: text('encrypted_access_token').notNull(),
   encryptedRefreshToken: text('encrypted_refresh_token').notNull(),
   accessExpiresAt: bigint('access_expires_at', { mode: 'number' }).notNull(),
@@ -18,20 +19,25 @@ export const projectWorkspace = pgTable(
     normalizedName: text('normalized_name').notNull(),
     name: text('name').notNull(),
     description: text('description').notNull().default(''),
+    deadline: text('deadline'),
     status: text('status').notNull().default('planned'),
     creatorUserId: text('creator_user_id').notNull(),
     baseToken: text('base_token'),
     nodeTableId: text('node_table_id'),
     edgeTableId: text('edge_table_id'),
     baseUrl: text('base_url'),
-    provisioningStatus: text('provisioning_status').notNull().default('creating'),
+    provisioningStatus: text('provisioning_status')
+      .notNull()
+      .default('creating'),
     provisioningError: text('provisioning_error'),
     catalogRecordId: text('catalog_record_id'),
     catalogSyncStatus: text('catalog_sync_status').notNull().default('pending'),
     deletionStatus: text('deletion_status').notNull().default('active'),
     deletionError: text('deletion_error'),
     deletedAt: bigint('deleted_at', { mode: 'number' }),
-    schemaVersion: bigint('schema_version', { mode: 'number' }).notNull().default(1),
+    schemaVersion: bigint('schema_version', { mode: 'number' })
+      .notNull()
+      .default(1),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
   },

@@ -21,6 +21,11 @@ export interface LarkCliTable {
   id: string;
   name: string;
 }
+export interface LarkCliField {
+  id?: string;
+  name: string;
+  type: string;
+}
 
 export interface LarkCliView {
   id: string;
@@ -48,6 +53,7 @@ interface RecordListData {
 @Injectable()
 export class LarkCliBaseClient {
   private readonly logger = new Logger(LarkCliBaseClient.name);
+  private readonly ensuredFieldSets = new Set<string>();
   private readonly executable = process.env.LARK_CLI_BIN?.trim() || 'lark-cli';
 
   isEnabled(): boolean {
@@ -104,6 +110,58 @@ export class LarkCliBaseClient {
       'json',
     ]);
     return data.tables ?? [];
+  }
+
+  async ensureFields(
+    baseToken: string,
+    tableId: string,
+    requiredFields: Array<Record<string, unknown> & { name: string }>,
+  ): Promise<void> {
+    const cacheKey = `${baseToken}:${tableId}:${requiredFields
+      .map((field) => field.name)
+      .sort()
+      .join(',')}`;
+    if (this.ensuredFieldSets.has(cacheKey)) return;
+    const data = await this.run<{
+      fields?: LarkCliField[];
+      items?: LarkCliField[];
+    }>([
+      'base',
+      '+field-list',
+      '--base-token',
+      baseToken,
+      '--table-id',
+      tableId,
+      '--offset',
+      '0',
+      '--limit',
+      '200',
+      '--as',
+      'user',
+      '--format',
+      'json',
+    ]);
+    const existingNames = new Set(
+      (data.fields ?? data.items ?? []).map((field) => field.name),
+    );
+    for (const field of requiredFields) {
+      if (existingNames.has(field.name)) continue;
+      await this.run([
+        'base',
+        '+field-create',
+        '--base-token',
+        baseToken,
+        '--table-id',
+        tableId,
+        '--json',
+        JSON.stringify(field),
+        '--as',
+        'user',
+        '--format',
+        'json',
+      ]);
+    }
+    this.ensuredFieldSets.add(cacheKey);
   }
 
   async renameTable(

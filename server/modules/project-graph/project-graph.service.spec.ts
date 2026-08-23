@@ -286,6 +286,7 @@ function createCliService() {
       nodeToken: 'wiki_created',
       url: 'https://example.feishu.cn/wiki/wiki_created',
     })),
+    ensureFields: jest.fn(async () => undefined),
     listTables: jest.fn(async () => [{ id: 'tbl_overview', name: 'Table' }]),
     renameTable: jest.fn(async () => undefined),
     renameBitable: jest.fn(async () => undefined),
@@ -384,11 +385,15 @@ function createOpenApiService(options?: { failOwnerOptions?: boolean }) {
     async (_userId: string, _baseToken: string, tableId: string) =>
       tableId === 'tbl_node_openapi' ? nodeRecords : [],
   );
+  const ensureFields = jest.fn(async () => {
+    callOrder.push('ensure:timeline');
+  });
   const feishuBase = {
     ensureSelectOptions,
     updateRecord,
     createRecord,
     listRecords,
+    ensureFields,
   } as unknown as FeishuBaseClient;
   const workspaceRepository = {
     isEnabled: () => true,
@@ -407,6 +412,7 @@ function createOpenApiService(options?: { failOwnerOptions?: boolean }) {
     callOrder,
     createRecord,
     ensureSelectOptions,
+    ensureFields,
     updateRecord,
     service: new ProjectGraphService(
       capabilityService,
@@ -430,7 +436,8 @@ describe('ProjectGraphService Base channel', () => {
     expect(graph.nodes[0]).toMatchObject({
       id: 'rec_node_1',
       lane: 'software',
-      date: '2026-08-04',
+      startDate: '2026-08-04',
+      deadline: '2026-08-04',
       owners: [
         {
           apaasUserId: '101',
@@ -546,6 +553,7 @@ describe('ProjectGraphService Base channel', () => {
     const project = await service.createProject({
       name: '机器人视觉平台',
       description: '视觉项目',
+      deadline: '2026-12-31',
       parentId: PROJECT_RECORD_ID,
       source: 'shared-base',
     });
@@ -553,6 +561,7 @@ describe('ProjectGraphService Base channel', () => {
     expect(project).toMatchObject({
       id: 'rec_created',
       name: '机器人视觉平台',
+      deadline: '2026-12-31',
       parentId: PROJECT_RECORD_ID,
       source: 'shared-base',
     });
@@ -568,6 +577,7 @@ describe('ProjectGraphService Base channel', () => {
             项目名称: '机器人视觉平台',
             状态: '规划',
             项目说明: '视觉项目',
+            项目截止日期: Date.UTC(2026, 11, 31),
             项目文档: {
               text: '机器人视觉平台',
               link: expect.stringContaining(
@@ -606,7 +616,7 @@ describe('ProjectGraphService Base channel', () => {
   it('updates a shared project name in the project catalog', async () => {
     const { calls, service } = createService();
 
-    const project = await service.updateProjectName('rec_project_empty', {
+    const project = await service.updateProject('rec_project_empty', {
       name: '空项目二期',
     });
 
@@ -627,14 +637,39 @@ describe('ProjectGraphService Base channel', () => {
     });
   });
 
+  it('updates a project deadline in the shared Base catalog', async () => {
+    const { calls, service } = createService();
+
+    const project = await service.updateProject('rec_project_empty', {
+      name: '空项目',
+      deadline: '2026-12-31',
+    });
+
+    expect(project.deadline).toBe('2026-12-31');
+    expect(
+      calls.find(
+        (call) =>
+          call.pluginId === PROJECT_PLUGIN_ID &&
+          call.action === 'batchUpdateRecords',
+      )?.input,
+    ).toEqual({
+      records: [
+        {
+          id: 'rec_project_empty',
+          record: { 项目截止日期: Date.UTC(2026, 11, 31) },
+        },
+      ],
+    });
+  });
+
   it('rejects an empty or duplicate project name before writing', async () => {
     const { calls, service } = createService();
 
     await expect(
-      service.updateProjectName('rec_project_empty', { name: '  ' }),
+      service.updateProject('rec_project_empty', { name: '  ' }),
     ).rejects.toThrow('项目名称不能为空');
     await expect(
-      service.updateProjectName('rec_project_empty', { name: '非空项目' }),
+      service.updateProject('rec_project_empty', { name: '非空项目' }),
     ).rejects.toThrow('项目名称已存在');
     expect(
       calls.filter((call) => call.action === 'batchUpdateRecords'),
@@ -728,7 +763,8 @@ describe('ProjectGraphService Base channel', () => {
           name: '李四',
         },
       ],
-      date: '2026-08-04',
+      startDate: '2026-07-28',
+      deadline: '2026-08-04',
     });
 
     const update = calls.find((call) => call.action === 'batchUpdateRecords');
@@ -742,7 +778,8 @@ describe('ProjectGraphService Base channel', () => {
               分组: '联调测试',
               节点类型: '测试',
               负责人ID: [303, 404],
-              日期: Date.UTC(2026, 7, 4),
+              开始日期: Date.UTC(2026, 6, 28),
+              截止日期: Date.UTC(2026, 7, 4),
             },
           },
         ],
@@ -783,7 +820,8 @@ describe('ProjectGraphService Base channel', () => {
       ],
       progress: 40,
       version: 'feature/base-writeback',
-      date: '2026-08-05',
+      startDate: '2026-07-29',
+      deadline: '2026-08-05',
       x: 0,
       y: 0,
       tags: ['Base', '人员'],
@@ -809,7 +847,8 @@ describe('ProjectGraphService Base channel', () => {
               节点类型: '软件',
               负责人ID: [303, 404],
               所属项目: [PROJECT_RECORD_ID],
-              日期: Date.UTC(2026, 7, 5),
+              开始日期: Date.UTC(2026, 6, 29),
+              截止日期: Date.UTC(2026, 7, 5),
               标签: 'Base，人员',
               图片URL: 'https://example.com/image.png',
               父节点: ['rec_node_1'],
@@ -869,7 +908,8 @@ describe('ProjectGraphService Base channel', () => {
         owners: [{ apaasUserId: '', name: '曾启渊' }],
         progress: 35,
         version: 'cloud-linked',
-        date: '2026-08-10',
+        startDate: '2026-08-03',
+        deadline: '2026-08-10',
         x: 0,
         y: 0,
         tags: ['云端', '同步'],
@@ -895,7 +935,8 @@ describe('ProjectGraphService Base channel', () => {
               节点名称: '云端独立节点',
               负责人: '曾启渊',
               任务负责人: ['曾启渊'],
-              日期: Date.UTC(2026, 7, 10),
+              开始日期: Date.UTC(2026, 7, 3),
+              截止日期: Date.UTC(2026, 7, 10),
             }),
           },
         ],
@@ -931,7 +972,8 @@ describe('ProjectGraphService Base channel', () => {
         status: 'planned',
         owners: [],
         progress: 0,
-        date: '2026-08-10',
+        startDate: '2026-08-03',
+        deadline: '2026-08-10',
         x: 0,
         y: 0,
         linkedIds: ['rec_node_1'],
@@ -957,7 +999,8 @@ describe('ProjectGraphService Base channel', () => {
           { apaasUserId: '', name: '沈智伟' },
         ],
         linkedIds: ['rec_parent'],
-        date: '2026-08-10',
+        startDate: '2026-08-03',
+        deadline: '2026-08-10',
       },
       'rec_project_linked',
     );
@@ -977,7 +1020,8 @@ describe('ProjectGraphService Base channel', () => {
             record: {
               负责人: '曾启渊 / 沈智伟',
               任务负责人: ['曾启渊', '沈智伟'],
-              日期: Date.UTC(2026, 7, 10),
+              开始日期: Date.UTC(2026, 7, 3),
+              截止日期: Date.UTC(2026, 7, 10),
             },
           },
         ],
@@ -1078,7 +1122,8 @@ describe('ProjectGraphService Base channel', () => {
         status: 'planned',
         owners: [{ apaasUserId: '', name: '张三' }],
         progress: 0,
-        date: '2026-08-09',
+        startDate: '2026-08-02',
+        deadline: '2026-08-09',
         x: 0,
         y: 0,
         linkedIds: ['rec_cli_node'],
@@ -1207,7 +1252,8 @@ describe('ProjectGraphService Base channel', () => {
         '状态',
         '工作内容',
         '进度',
-        '日期',
+        '开始日期',
+        '截止日期',
         '下一步',
         '风险/阻塞',
         '节点类型',
@@ -1220,11 +1266,15 @@ describe('ProjectGraphService Base channel', () => {
   it('renames both the independent Base and its catalog record through lark-cli', async () => {
     const { larkCli, service } = createCliService();
 
-    const project = await service.updateProjectName('rec_catalog_1', {
+    const project = await service.updateProject('rec_catalog_1', {
       name: 'CLI 独立项目二期',
+      deadline: '2026-12-31',
     });
 
-    expect(project.name).toBe('CLI 独立项目二期');
+    expect(project).toMatchObject({
+      name: 'CLI 独立项目二期',
+      deadline: '2026-12-31',
+    });
     expect(larkCli.renameBitable).toHaveBeenCalledWith(
       'base_cli',
       'CLI 独立项目二期',
@@ -1233,7 +1283,10 @@ describe('ProjectGraphService Base channel', () => {
       'I2hLbxQOsaZYcQsPuSOc3UMWnSe',
       'tblrpWm6qG55Xssv',
       'rec_catalog_1',
-      { 项目名称: 'CLI 独立项目二期' },
+      {
+        项目名称: 'CLI 独立项目二期',
+        项目截止日期: '2026-12-31 00:00:00',
+      },
     );
   });
 
@@ -1244,10 +1297,10 @@ describe('ProjectGraphService Base channel', () => {
     );
 
     await expect(
-      service.updateProjectName('rec_catalog_1', {
+      service.updateProject('rec_catalog_1', {
         name: '不会保留的名称',
       }),
-    ).rejects.toThrow('项目名称修改失败: catalog write failed');
+    ).rejects.toThrow('项目设置修改失败: catalog write failed');
     expect(larkCli.renameBitable).toHaveBeenNthCalledWith(
       1,
       'base_cli',
@@ -1284,7 +1337,7 @@ describe('ProjectGraphService Base channel', () => {
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
     await expect(
-      service.updateNode('rec_node_1', { date: '2026-02-30' }),
+      service.updateNode('rec_node_1', { deadline: '2026-02-30' }),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -1464,6 +1517,45 @@ describe('ProjectGraphService Base channel', () => {
         { 节点名称: '新标题' },
       );
     });
+    it('creates timeline fields before writing an editable schedule', async () => {
+      const { callOrder, ensureFields, service, updateRecord } =
+        createOpenApiService();
+
+      await service.updateNode(
+        'rec_openapi_node',
+        { startDate: '2026-08-10', deadline: '2026-08-20' },
+        'rec_openapi_project',
+      );
+
+      expect(callOrder).toEqual(['ensure:timeline', 'update']);
+      expect(ensureFields).toHaveBeenCalledWith(
+        'miaoda-account-id',
+        'base_openapi',
+        'tbl_node_openapi',
+        [
+          {
+            name: '开始日期',
+            type: 'datetime',
+            style: { format: 'yyyy-MM-dd' },
+          },
+          {
+            name: '截止日期',
+            type: 'datetime',
+            style: { format: 'yyyy-MM-dd' },
+          },
+        ],
+      );
+      expect(updateRecord).toHaveBeenCalledWith(
+        'miaoda-account-id',
+        'base_openapi',
+        'tbl_node_openapi',
+        'rec_openapi_node',
+        {
+          开始日期: '2026-08-10 00:00:00',
+          截止日期: '2026-08-20 00:00:00',
+        },
+      );
+    });
 
     it('repairs owner options before creating a node', async () => {
       const { callOrder, createRecord, ensureSelectOptions, service } =
@@ -1477,7 +1569,8 @@ describe('ProjectGraphService Base channel', () => {
           status: 'planned',
           owners: [{ apaasUserId: '1', name: '殷雄伟' }],
           progress: 0,
-          date: '2026-08-13',
+          startDate: '2026-08-06',
+          deadline: '2026-08-13',
           x: 0,
           y: 0,
           linkedIds: [],
@@ -1485,7 +1578,12 @@ describe('ProjectGraphService Base channel', () => {
         'rec_openapi_project',
       );
 
-      expect(callOrder).toEqual(['ensure:分组', 'ensure:任务负责人', 'create']);
+      expect(callOrder).toEqual([
+        'ensure:timeline',
+        'ensure:分组',
+        'ensure:任务负责人',
+        'create',
+      ]);
       expect(ensureSelectOptions).toHaveBeenLastCalledWith(
         'miaoda-account-id',
         'base_openapi',
@@ -1527,7 +1625,8 @@ describe('ProjectGraphService Base channel', () => {
             status: 'planned',
             owners: [{ apaasUserId: '1', name: '殷雄伟' }],
             progress: 0,
-            date: '2026-08-13',
+            startDate: '2026-08-06',
+            deadline: '2026-08-13',
             x: 0,
             y: 0,
             linkedIds: [],

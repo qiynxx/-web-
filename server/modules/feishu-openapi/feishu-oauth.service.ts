@@ -21,6 +21,7 @@ import type { FeishuOAuthToken } from './feishu-openapi.client';
 import { FeishuOpenApiClient } from './feishu-openapi.client';
 
 interface StoredToken {
+  appId: string | null;
   encryptedAccessToken: string;
   encryptedRefreshToken: string;
   accessExpiresAt: number;
@@ -52,6 +53,7 @@ export class FeishuOAuthService {
     const token = await this.findToken(accountId);
     return Boolean(
       token &&
+      token.appId === this.currentAppId() &&
       token.refreshExpiresAt > Date.now() &&
       token.scope.split(/\s+/).includes('drive:drive'),
     );
@@ -59,7 +61,11 @@ export class FeishuOAuthService {
 
   async getAccessToken(accountId: string): Promise<string> {
     const stored = await this.findToken(accountId);
-    if (!stored || stored.refreshExpiresAt <= Date.now()) {
+    if (
+      !stored ||
+      stored.appId !== this.currentAppId() ||
+      stored.refreshExpiresAt <= Date.now()
+    ) {
       throw new UnauthorizedException('需要先完成飞书用户授权');
     }
     if (stored.accessExpiresAt > Date.now() + 60_000) {
@@ -95,6 +101,7 @@ export class FeishuOAuthService {
     const now = Date.now();
     const stored: typeof feishuOAuthToken.$inferInsert = {
       userId: accountId,
+      appId: this.currentAppId(),
       encryptedAccessToken: this.encrypt(token.accessToken),
       encryptedRefreshToken: this.encrypt(token.refreshToken),
       accessExpiresAt: now + Math.max(0, token.expiresIn - 30) * 1_000,
@@ -108,6 +115,7 @@ export class FeishuOAuthService {
       .onConflictDoUpdate({
         target: feishuOAuthToken.userId,
         set: {
+          appId: stored.appId,
           encryptedAccessToken: stored.encryptedAccessToken,
           encryptedRefreshToken: stored.encryptedRefreshToken,
           accessExpiresAt: stored.accessExpiresAt,
@@ -187,6 +195,16 @@ export class FeishuOAuthService {
       );
     }
     return this.db;
+  }
+
+  private currentAppId(): string {
+    const appId = process.env.FEISHU_APP_ID?.trim();
+    if (!appId) {
+      throw new BadRequestException(
+        '服务端缺少环境变量 FEISHU_APP_ID',
+      );
+    }
+    return appId;
   }
 
   private encryptionKey(): Buffer {
