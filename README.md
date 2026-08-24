@@ -8,7 +8,7 @@
 - Web 项目目录：`Web项目管理可视化`
 - 项目边界：每个项目一个独立 Base，每个 Base 自动创建“项目节点”和“项目连接关系”表
 - 飞书看板：每个独立项目自动创建“人员分工看板”，按任务负责人分列并展示状态和关键执行信息
-- 时间计划：目录 Base 保存项目截止日期；项目节点以“开始日期”和“截止日期”保存在独立 Base；Web 默认打开甘特图，流程图直接标记 DDL，两处时间均可编辑
+- 时间计划：目录 Base 保存项目截止日期；项目节点以“开始日期”和“截止日期”保存在独立 Base；Web 默认打开流程图，使用醒目的大尺寸按钮切换甘特图，流程图直接标记 DDL，两处时间均可编辑
 - 生产 OpenAPI 通道：`server/modules/feishu-openapi/`
 - 本地动态读写通道：`server/modules/project-graph/lark-cli-base.client.ts`
 - 固定 Base 兼容通道：`server/capabilities/*.json`

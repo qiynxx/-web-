@@ -241,7 +241,7 @@ function ProjectGraphPage() {
   const [query, setQuery] = useState<string>('');
   const [compactMode, setCompactMode] = useState<boolean>(false);
   const [workspaceView, setWorkspaceView] = useState<'graph' | 'gantt'>(
-    'gantt',
+    'graph',
   );
   const [navigationCollapsed, setNavigationCollapsed] =
     useState<boolean>(false);
@@ -1780,19 +1780,9 @@ function ProjectGraphPage() {
           ) : null}
           <div className="graph-main-panel">
             <div className="graph-toolbar">
-              <div className="search-box">
-                <Search />
-                <Input
-                  aria-label="搜索节点"
-                  onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                    setQuery(event.target.value)
-                  }
-                  placeholder="搜索版本、负责人、工作内容、标签"
-                  value={query}
-                />
-              </div>
               <div className="workspace-view-switch" aria-label="项目视图">
                 <button
+                  aria-pressed={workspaceView === 'graph'}
                   className={workspaceView === 'graph' ? 'active' : ''}
                   onClick={() => setWorkspaceView('graph')}
                   type="button"
@@ -1801,6 +1791,7 @@ function ProjectGraphPage() {
                   流程图
                 </button>
                 <button
+                  aria-pressed={workspaceView === 'gantt'}
                   className={workspaceView === 'gantt' ? 'active' : ''}
                   onClick={() => setWorkspaceView('gantt')}
                   type="button"
@@ -1809,31 +1800,46 @@ function ProjectGraphPage() {
                   甘特图
                 </button>
               </div>
-              <SegmentedControl<ProjectLane | 'all'>
-                label="类型"
-                onChange={setLaneFilter}
-                options={laneOptions}
-                renderLabel={(value: ProjectLane | 'all') => LANE_LABELS[value]}
-                value={laneFilter}
-              />
-              <SegmentedControl<ProjectNodeStatus | 'all'>
-                label="状态"
-                onChange={setStatusFilter}
-                options={statusOptions}
-                renderLabel={(value: ProjectNodeStatus | 'all') =>
-                  STATUS_LABELS[value]
-                }
-                value={statusFilter}
-              />
-              <button
-                className={
-                  compactMode ? 'compact-toggle active' : 'compact-toggle'
-                }
-                onClick={() => setCompactMode((current: boolean) => !current)}
-                type="button"
-              >
-                简洁模式
-              </button>
+              <div className="graph-toolbar-controls">
+                <div className="search-box">
+                  <Search />
+                  <Input
+                    aria-label="搜索节点"
+                    onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+                      setQuery(event.target.value)
+                    }
+                    placeholder="搜索版本、负责人、工作内容、标签"
+                    value={query}
+                  />
+                </div>
+                <SegmentedControl<ProjectLane | 'all'>
+                  label="类型"
+                  onChange={setLaneFilter}
+                  options={laneOptions}
+                  renderLabel={(value: ProjectLane | 'all') =>
+                    LANE_LABELS[value]
+                  }
+                  value={laneFilter}
+                />
+                <SegmentedControl<ProjectNodeStatus | 'all'>
+                  label="状态"
+                  onChange={setStatusFilter}
+                  options={statusOptions}
+                  renderLabel={(value: ProjectNodeStatus | 'all') =>
+                    STATUS_LABELS[value]
+                  }
+                  value={statusFilter}
+                />
+                <button
+                  className={
+                    compactMode ? 'compact-toggle active' : 'compact-toggle'
+                  }
+                  onClick={() => setCompactMode((current: boolean) => !current)}
+                  type="button"
+                >
+                  简洁模式
+                </button>
+              </div>
             </div>
 
             {workspaceView === 'gantt' ? (
@@ -3057,7 +3063,12 @@ function GanttChart({
         </div>
       </header>
       <div className="gantt-scroll">
-        <div className="gantt-grid" style={{ width: 360 + timelineWidth }}>
+        <div
+          className="gantt-grid"
+          style={{
+            width: `calc(var(--gantt-label-width) + ${timelineWidth}px)`,
+          }}
+        >
           <div className="gantt-label-header">
             <span>项目节点</span>
             <small>开始日期 / DDL</small>
