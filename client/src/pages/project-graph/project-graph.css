@@ -3091,6 +3091,17 @@
   width: 18px;
 }
 
+.mobile-view-row {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.mobile-focus-toggle {
+  display: none;
+}
+
 @media (max-width: 760px),
   (orientation: portrait) and (max-width: 900px),
   (orientation: landscape) and (max-height: 500px) and (max-width: 900px) {
@@ -3107,15 +3118,72 @@
     width: 100%;
   }
 
+  .mobile-view-row {
+    width: 100%;
+  }
+
+  .mobile-view-row .workspace-view-switch {
+    flex: 1 1 auto;
+    width: auto;
+  }
+
+  .mobile-focus-toggle {
+    align-items: center;
+    background: #e8edf4;
+    border: 1px solid #cdd7e3;
+    border-radius: 12px;
+    color: #425168;
+    cursor: pointer;
+    display: flex;
+    flex: 0 0 52px;
+    height: 52px;
+    justify-content: center;
+    padding: 0;
+    touch-action: manipulation;
+    width: 52px;
+  }
+
+  .mobile-focus-toggle.active {
+    background: #e8f0ff;
+    border-color: #9db9ef;
+    color: #1d4ed8;
+  }
+
+  .mobile-focus-toggle svg {
+    height: 20px;
+    width: 20px;
+  }
+
   .gantt-overview {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 6px;
-    padding: 8px 10px;
+    align-items: center;
+    flex-direction: row;
+    gap: 8px;
+    min-height: 58px;
+    overflow: hidden;
+    padding: 7px 9px;
+  }
+
+  .gantt-overview > div:first-child {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .gantt-overview strong,
+  .gantt-overview small {
+    white-space: nowrap;
   }
 
   .gantt-overview-stats {
-    justify-content: flex-start;
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .gantt-overview-stats::-webkit-scrollbar {
+    display: none;
   }
 
   .gantt-overview-stats span:last-child {
@@ -3123,7 +3191,7 @@
   }
 
   .gantt-view {
-    --gantt-label-width: min(72vw, 280px);
+    --gantt-label-width: min(66vw, 260px);
   }
 
   .gantt-grid,
@@ -3162,6 +3230,24 @@
   .gantt-bar {
     height: 34px;
     top: 41px;
+  }
+
+  .mobile-focus-mode .project-navigation,
+  .mobile-focus-mode .graph-header,
+  .mobile-focus-mode .data-source-banner,
+  .mobile-focus-mode .metric-strip {
+    display: none;
+  }
+
+  .mobile-focus-mode .project-content {
+    flex: 1 1 auto;
+    height: 100dvh;
+    padding: 4px;
+  }
+
+  .mobile-focus-mode .graph-workspace,
+  .mobile-focus-mode .graph-main-panel {
+    height: 100%;
   }
 }
 

@@ -13,6 +13,7 @@ import {
   Link,
   LoaderCircle,
   Maximize2,
+  Minimize2,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -243,6 +244,7 @@ function ProjectGraphPage() {
   const [workspaceView, setWorkspaceView] = useState<'graph' | 'gantt'>(
     'graph',
   );
+  const [mobileFocusMode, setMobileFocusMode] = useState<boolean>(true);
   const [navigationCollapsed, setNavigationCollapsed] =
     useState<boolean>(false);
   const [inspectorOpen, setInspectorOpen] = useState<boolean>(false);
@@ -1547,6 +1549,7 @@ function ProjectGraphPage() {
         'graph-shell',
         'project-shell',
         navigationCollapsed ? 'navigation-collapsed' : '',
+        mobileFocusMode ? 'mobile-focus-mode' : '',
       ].join(' ')}
     >
       <aside className="project-navigation">
@@ -1780,24 +1783,44 @@ function ProjectGraphPage() {
           ) : null}
           <div className="graph-main-panel">
             <div className="graph-toolbar">
-              <div className="workspace-view-switch" aria-label="项目视图">
+              <div className="mobile-view-row">
+                <div className="workspace-view-switch" aria-label="项目视图">
+                  <button
+                    aria-pressed={workspaceView === 'graph'}
+                    className={workspaceView === 'graph' ? 'active' : ''}
+                    onClick={() => setWorkspaceView('graph')}
+                    type="button"
+                  >
+                    <GitBranch />
+                    流程图
+                  </button>
+                  <button
+                    aria-pressed={workspaceView === 'gantt'}
+                    className={workspaceView === 'gantt' ? 'active' : ''}
+                    onClick={() => setWorkspaceView('gantt')}
+                    type="button"
+                  >
+                    <CalendarDays />
+                    甘特图
+                  </button>
+                </div>
                 <button
-                  aria-pressed={workspaceView === 'graph'}
-                  className={workspaceView === 'graph' ? 'active' : ''}
-                  onClick={() => setWorkspaceView('graph')}
+                  aria-label={
+                    mobileFocusMode
+                      ? '显示项目工具'
+                      : '进入专注视图，扩大可视化区域'
+                  }
+                  aria-pressed={mobileFocusMode}
+                  className={
+                    mobileFocusMode
+                      ? 'mobile-focus-toggle active'
+                      : 'mobile-focus-toggle'
+                  }
+                  onClick={() => setMobileFocusMode((focused) => !focused)}
+                  title={mobileFocusMode ? '显示项目工具' : '专注视图'}
                   type="button"
                 >
-                  <GitBranch />
-                  流程图
-                </button>
-                <button
-                  aria-pressed={workspaceView === 'gantt'}
-                  className={workspaceView === 'gantt' ? 'active' : ''}
-                  onClick={() => setWorkspaceView('gantt')}
-                  type="button"
-                >
-                  <CalendarDays />
-                  甘特图
+                  {mobileFocusMode ? <Minimize2 /> : <Maximize2 />}
                 </button>
               </div>
               <div className="graph-toolbar-controls">
